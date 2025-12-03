@@ -203,7 +203,7 @@ const SettingsApp: React.FC<SettingsProps> = ({ settings, updateSettings, charac
         <div className="bg-blue-50 p-4 rounded-xl border border-blue-100">
              <h2 className="font-bold text-blue-800 mb-2 flex items-center gap-2"><i className="fas fa-info-circle"></i> 关于小手机</h2>
              <p className="text-xs text-blue-600 leading-relaxed font-bold">⚠️ 请务必经常使用下方的【导出备份】功能！</p>
-             <p className="text-[10px] text-blue-400 mt-2">Version 2.0 (Theater Mode)</p>
+             <p className="text-[10px] text-blue-400 mt-2">Version 2.1 (Widgets & UI Fixes)</p>
         </div>
 
         <div className="bg-white p-4 rounded-xl shadow-sm flex items-center justify-between">
@@ -249,6 +249,20 @@ const SettingsApp: React.FC<SettingsProps> = ({ settings, updateSettings, charac
           <div className="space-y-4">
             <div><label className="block text-xs text-gray-500 uppercase font-bold mb-2">主屏幕壁纸</label><input type="file" accept="image/*" onChange={handleWallpaperUpload} className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-purple-50 file:text-purple-700 hover:file:bg-purple-100" /></div>
             <div><label className="block text-xs text-gray-500 uppercase font-bold mb-2">全局字体</label><input type="file" accept="*" onChange={handleFontUpload} className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-purple-50 file:text-purple-700 hover:file:bg-purple-100" /></div>
+            
+            {/* Immersive Font Size Setting */}
+            <div>
+               <div className="flex justify-between items-center mb-1">
+                   <label className="block text-xs text-gray-500 uppercase font-bold">沉浸/剧场模式字号</label>
+                   <span className="text-xs text-purple-600 font-bold">{localSettings.immersiveFontSize || 18}px</span>
+               </div>
+               <input 
+                 type="range" min="14" max="30" step="1" 
+                 value={localSettings.immersiveFontSize || 18} 
+                 onChange={(e) => setLocalSettings({...localSettings, immersiveFontSize: parseInt(e.target.value)})}
+                 className="w-full accent-purple-600 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+               />
+            </div>
           </div>
         </div>
         

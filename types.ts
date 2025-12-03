@@ -113,6 +113,11 @@ export interface Character {
   unread?: number;
 }
 
+export interface Widget {
+  id: string;
+  image: string;
+}
+
 export interface AppSettings {
   apiUrl: string;
   apiKey: string;
@@ -120,6 +125,8 @@ export interface AppSettings {
   wallpaper: string;
   fullScreenMode: boolean;
   customFont?: string;
+  immersiveFontSize?: number; // New setting
+  widgets?: Widget[]; // New setting
   availableModels: string[];
   globalPersona: GlobalPersona;
 }

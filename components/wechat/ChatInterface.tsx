@@ -175,45 +175,46 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
     }
 
     const contentToSend = customContent || inputValue.trim();
+    // FIX: If both contentToSend is empty AND we aren't asking for a reply, do nothing.
+    // Also if just asking for reply (getReply=true) but content is empty, we SKIP adding a user message.
     if (!contentToSend && !getReply) return;
     
-    // 1. Add User Message
-    let newMessage: Message = {
-        id: Date.now().toString(),
-        role: 'user',
-        content: contentToSend,
-        timestamp: Date.now(),
-        mode: viewMode === 'offline' ? 'offline' : (viewMode === 'theater_room' ? 'theater' : 'online'),
-        scenarioId: activeScenarioId || undefined,
-        quote: quotingMsg ? {
-            id: quotingMsg.id,
-            content: quotingMsg.content,
-            name: quotingMsg.role === 'model' ? character.remark : '我'
-        } : undefined
-    };
-    
     // Prepare updated character state OPTIMISTICALLY to pass to AI
-    // This solves the "AI replies to old message" bug
     let updatedCharForAI = { ...character };
 
-    if (viewMode === 'theater_room' && activeScenario && !activeScenario.isConnected) {
-        // Isolated Theater: Update Scenario Messages locally
-        const updatedScenarios = character.scenarios?.map(s => 
-            s.id === activeScenarioId ? { ...s, messages: [...(s.messages || []), newMessage] } : s
-        ) || [];
-        onUpdateCharacter({ ...character, scenarios: updatedScenarios });
-        // Update temp char for AI func
-        updatedCharForAI = { ...character, scenarios: updatedScenarios };
-    } else {
-        // Main Chat / Offline / Connected Theater
-        onAddMessage(character.id, newMessage);
-        // Update temp char for AI func
-        updatedCharForAI = { ...character, messages: [...character.messages, newMessage] };
-    }
+    // 1. Add User Message (ONLY if there is content)
+    if (contentToSend) {
+        const newMessage: Message = {
+            id: Date.now().toString(),
+            role: 'user',
+            content: contentToSend,
+            timestamp: Date.now(),
+            mode: viewMode === 'offline' ? 'offline' : (viewMode === 'theater_room' ? 'theater' : 'online'),
+            scenarioId: activeScenarioId || undefined,
+            quote: quotingMsg ? {
+                id: quotingMsg.id,
+                content: quotingMsg.content,
+                name: quotingMsg.role === 'model' ? character.remark : '我'
+            } : undefined
+        };
 
-    setInputValue('');
-    setQuotingMsg(null);
-    setShowDrawer(false); 
+        if (viewMode === 'theater_room' && activeScenario && !activeScenario.isConnected) {
+            // Isolated Theater: Update Scenario Messages locally
+            const updatedScenarios = character.scenarios?.map(s => 
+                s.id === activeScenarioId ? { ...s, messages: [...(s.messages || []), newMessage] } : s
+            ) || [];
+            onUpdateCharacter({ ...character, scenarios: updatedScenarios });
+            updatedCharForAI = { ...character, scenarios: updatedScenarios };
+        } else {
+            // Main Chat / Offline / Connected Theater
+            onAddMessage(character.id, newMessage);
+            updatedCharForAI = { ...character, messages: [...character.messages, newMessage] };
+        }
+
+        setInputValue('');
+        setQuotingMsg(null);
+        setShowDrawer(false); 
+    }
 
     // 2. Request Reply
     if (getReply) {
@@ -239,21 +240,14 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
           scenarioId: activeScenarioId || undefined
       };
       
-      let updatedCharForAI = { ...character };
-
       if (viewMode === 'theater_room' && activeScenario && !activeScenario.isConnected) {
          const updatedScenarios = character.scenarios?.map(s => 
             s.id === activeScenarioId ? { ...s, messages: [...(s.messages || []), patMsg] } : s
          ) || [];
          onUpdateCharacter({ ...character, scenarios: updatedScenarios });
-         updatedCharForAI = { ...character, scenarios: updatedScenarios };
       } else {
          onAddMessage(character.id, patMsg);
-         updatedCharForAI = { ...character, messages: [...character.messages, patMsg] };
       }
-      
-      // Auto reply to pat? Optional.
-      // fetchAIReply(updatedCharForAI);
   };
   
   const handleGame = (type: 'DICE') => {
@@ -458,7 +452,10 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
                             (对方撤回了动作 - 点击偷看)
                         </div>
                     ) : (
-                        <div className={`leading-loose text-lg whitespace-pre-wrap ${msg.role === 'user' ? 'text-stone-300 italic' : 'text-amber-100/90'}`}>
+                        <div 
+                            className={`leading-loose whitespace-pre-wrap ${msg.role === 'user' ? 'text-stone-300 italic' : 'text-amber-100/90'}`}
+                            style={{ fontSize: `${settings.immersiveFontSize || 18}px` }} // Apply dynamic font size
+                        >
                             {msg.content}
                         </div>
                     )}
