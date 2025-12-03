@@ -16,6 +16,7 @@ interface ChatInterfaceProps {
 
 type ViewMode = 'chat' | 'offline' | 'theater_list' | 'theater_room';
 
+// --- Helper Components ---
 const LoadingBubbles = ({ color }: { color?: string }) => (
   <div className="flex space-x-1 items-center bg-stone-800/80 px-4 py-2 rounded-full w-fit animate-fade-in border border-stone-600">
     <div className="w-2 h-2 rounded-full animate-bounce [animation-delay:-0.3s]" style={{ backgroundColor: color || '#f59e0b' }}></div>
@@ -34,12 +35,19 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
   const [showOfflineSettings, setShowOfflineSettings] = useState(false);
   const [showClearHistoryModal, setShowClearHistoryModal] = useState(false);
   const [showOSModal, setShowOSModal] = useState(false);
+  
   const [viewMode, setViewMode] = useState<ViewMode>('chat');
+  
+  // Theater State
   const [activeScenarioId, setActiveScenarioId] = useState<string | null>(null);
   const [isCreatingScenario, setIsCreatingScenario] = useState(false);
   const [newScenario, setNewScenario] = useState<Partial<Scenario>>({});
   const [showScenarioSettings, setShowScenarioSettings] = useState(false);
+
+  // Temp State
   const [tempCharConfig, setTempCharConfig] = useState<Character>(character);
+
+  // Message Action State
   const [contextMenuMsgId, setContextMenuMsgId] = useState<string | null>(null);
   const [editingMsgId, setEditingMsgId] = useState<string | null>(null);
   const [editContent, setEditContent] = useState('');
@@ -47,13 +55,24 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
   const activeScenario = character.scenarios?.find(s => s.id === activeScenarioId);
 
-  const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  useEffect(() => { scrollToBottom(); }, [character.messages, isTyping, viewMode, quotingMsg, activeScenario]);
-  useEffect(() => { setTempCharConfig(character); }, [character]);
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [character.messages, isTyping, viewMode, quotingMsg, activeScenario]);
+
+  useEffect(() => {
+    setTempCharConfig(character);
+  }, [character]);
 
   const currentUserAvatar = character.useLocalPersona ? (character.userMaskAvatar || 'https://ui-avatars.com/api/?name=U') : settings.globalPersona.avatar;
+
+  // --- Theater Logic ---
 
   const handleCreateScenario = () => {
       if (!newScenario.title) return;
@@ -65,9 +84,12 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
           isConnected: newScenario.isConnected ?? true,
           wallpaper: '',
           contextMemory: '',
-          messages: []
+          messages: [] 
       };
-      onUpdateCharacter({ ...character, scenarios: [scenario, ...(character.scenarios || [])] });
+      onUpdateCharacter({
+          ...character,
+          scenarios: [scenario, ...(character.scenarios || [])]
+      });
       setIsCreatingScenario(false);
       setNewScenario({});
   };
@@ -81,7 +103,9 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
 
   const updateActiveScenario = (updates: Partial<Scenario>) => {
       if (!activeScenarioId) return;
-      const updatedScenarios = (character.scenarios || []).map(s => s.id === activeScenarioId ? { ...s, ...updates } : s);
+      const updatedScenarios = (character.scenarios || []).map(s => 
+          s.id === activeScenarioId ? { ...s, ...updates } : s
+      );
       onUpdateCharacter({ ...character, scenarios: updatedScenarios });
   };
 
@@ -93,7 +117,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
               content: `[系统：用户已离开剧场模式: ${activeScenario.title}。请恢复正常微信聊天模式。]`,
               timestamp: Date.now(),
               mode: 'online',
-              isHidden: true
+              isHidden: true 
            };
            onAddMessage(character.id, exitMsg);
       }
@@ -101,9 +125,12 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
       setViewMode('theater_list');
   };
 
+  // --- Message Handling ---
+
   const handleSend = async (getReply: boolean, customContent?: string) => {
     if (isGlobalGenerating) return;
-    if (getReply && !settings.apiKey) { alert("请配置 API Key"); return; }
+    if (getReply && !settings.apiKey) { alert("请先配置 API Key"); return; }
+
     const contentToSend = customContent || inputValue.trim();
     if (!contentToSend && !getReply) return;
     
@@ -114,13 +141,20 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
         timestamp: Date.now(),
         mode: viewMode === 'offline' ? 'offline' : (viewMode === 'theater_room' ? 'theater' : 'online'),
         scenarioId: activeScenarioId || undefined,
-        quote: quotingMsg ? { id: quotingMsg.id, content: quotingMsg.content, name: quotingMsg.role === 'model' ? character.remark : '我' } : undefined
+        quote: quotingMsg ? {
+            id: quotingMsg.id,
+            content: quotingMsg.content,
+            name: quotingMsg.role === 'model' ? character.remark : '我'
+        } : undefined
     };
     
+    // Optimistic Update for AI Context
     let updatedCharForAI = { ...character };
 
     if (viewMode === 'theater_room' && activeScenario && !activeScenario.isConnected) {
-        const updatedScenarios = character.scenarios?.map(s => s.id === activeScenarioId ? { ...s, messages: [...(s.messages || []), newMessage] } : s) || [];
+        const updatedScenarios = character.scenarios?.map(s => 
+            s.id === activeScenarioId ? { ...s, messages: [...(s.messages || []), newMessage] } : s
+        ) || [];
         onUpdateCharacter({ ...character, scenarios: updatedScenarios });
         updatedCharForAI = { ...character, scenarios: updatedScenarios };
     } else {
@@ -135,7 +169,13 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
     if (getReply) {
       setIsTyping(true);
       setGlobalGenerating(true); 
-      try { await fetchAIReply(updatedCharForAI); } catch (e) { console.error(e); setIsTyping(false); setGlobalGenerating(false); }
+      try {
+        await fetchAIReply(updatedCharForAI); 
+      } catch (e) {
+        console.error(e);
+        setIsTyping(false);
+        setGlobalGenerating(false);
+      }
     }
   };
 
@@ -150,7 +190,9 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
       };
       
       if (viewMode === 'theater_room' && activeScenario && !activeScenario.isConnected) {
-         const updatedScenarios = character.scenarios?.map(s => s.id === activeScenarioId ? { ...s, messages: [...(s.messages || []), patMsg] } : s) || [];
+         const updatedScenarios = character.scenarios?.map(s => 
+            s.id === activeScenarioId ? { ...s, messages: [...(s.messages || []), patMsg] } : s
+         ) || [];
          onUpdateCharacter({ ...character, scenarios: updatedScenarios });
       } else {
          onAddMessage(character.id, patMsg);
@@ -159,7 +201,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
   
   const handleGame = (type: 'DICE') => {
       const val = Math.floor(Math.random() * 6) + 1;
-      handleSend(true, `[骰子] 掷出了 ${val} 点`);
+      const result = `[骰子] 掷出了 ${val} 点`;
+      handleSend(true, result);
   };
 
   const fetchAIReply = async (currentChar: Character) => {
@@ -167,46 +210,89 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
     const isTheater = viewMode === 'theater_room';
     
     let currentScenario = null;
-    if (isTheater && activeScenarioId) currentScenario = currentChar.scenarios?.find(s => s.id === activeScenarioId);
+    if (isTheater && activeScenarioId) {
+        currentScenario = currentChar.scenarios?.find(s => s.id === activeScenarioId);
+    }
 
     const memoryInjection = currentChar.memories.map(m => `[长期记忆: ${m.content}]`).join('\n');
     const mainContext = currentChar.contextMemory ? `[主线重要上下文]: ${currentChar.contextMemory}` : '';
-    const scenarioContext = (isTheater && currentScenario && !currentScenario.isConnected) ? `[剧场上下文]: ${currentScenario.contextMemory || ''}` : '';
+    
+    const scenarioContext = (isTheater && currentScenario && !currentScenario.isConnected) 
+        ? `[剧场上下文]: ${currentScenario.contextMemory || ''}` 
+        : '';
+
     const userName = currentChar.useLocalPersona ? currentChar.userMaskName : settings.globalPersona.name;
     const userDesc = currentChar.useLocalPersona ? currentChar.userMaskDescription : settings.globalPersona.description;
     const personaInjection = userDesc ? `\n[用户(${userName})设定: ${userDesc}]` : '';
     const timeInjection = currentChar.realTimeMode ? `\n[现实世界时间: ${new Date().toLocaleString('zh-CN', { hour12: false })}]` : '';
 
     let fullSystemPrompt = '';
+
     if (isTheater && currentScenario) {
         fullSystemPrompt = `[THEATER MODE: ${currentScenario.title}]\n${currentScenario.systemPrompt}\n\n${personaInjection}`;
-        fullSystemPrompt += currentScenario.isConnected ? `\n\n[注意：本剧场与主线记忆互通]\n${memoryInjection}\n${mainContext}` : `\n\n[注意：本剧场为独立平行宇宙]\n${scenarioContext}`;
+        if (currentScenario.isConnected) {
+            fullSystemPrompt += `\n\n[注意：本剧场与主线记忆互通]\n${memoryInjection}\n${mainContext}`;
+        } else {
+             fullSystemPrompt += `\n\n[注意：本剧场为独立平行宇宙]\n${scenarioContext}`;
+        }
     } else if (isOffline) {
-        fullSystemPrompt = interpolatePrompt(currentChar.offlineConfig.systemPrompt, { ai_name: currentChar.name, user_mask_name: userName, style: currentChar.offlineConfig.style, word_count: currentChar.offlineConfig.wordCount.toString() });
+        fullSystemPrompt = interpolatePrompt(currentChar.offlineConfig.systemPrompt, {
+            ai_name: currentChar.name,
+            user_mask_name: userName,
+            style: currentChar.offlineConfig.style,
+            word_count: currentChar.offlineConfig.wordCount.toString()
+        });
         fullSystemPrompt += `\n\n${memoryInjection}\n${mainContext}`;
     } else {
         let promptTemplate = currentChar.systemPrompt;
-        if (currentChar.showOS && currentChar.osSystemPrompt) promptTemplate += `\n\n${currentChar.osSystemPrompt}`;
-        let basePrompt = interpolatePrompt(promptTemplate, { ai_name: currentChar.name, user_mask_name: userName, personality: currentChar.personality });
+        if (currentChar.showOS && currentChar.osSystemPrompt) {
+            promptTemplate += `\n\n${currentChar.osSystemPrompt}`;
+        }
+        let basePrompt = interpolatePrompt(promptTemplate, {
+            ai_name: currentChar.name,
+            user_mask_name: userName,
+            personality: currentChar.personality,
+        });
         fullSystemPrompt = `${basePrompt}${personaInjection}${timeInjection}\n\n${memoryInjection}\n${mainContext}`;
     }
 
     const historyCount = currentChar.historyCount || 20;
-    let history = (isTheater && currentScenario && !currentScenario.isConnected) ? (currentScenario.messages || []) : currentChar.messages;
-    history = history.slice(-historyCount);
+    let history: any[] = [];
 
-    const processedHistory = history.filter(m => !m.isRecalled).map(m => {
+    if (isTheater && currentScenario && !currentScenario.isConnected) {
+        history = (currentScenario.messages || []).slice(-historyCount);
+    } else {
+        history = currentChar.messages.slice(-historyCount);
+    }
+
+    const processedHistory = history
+      .filter(m => !m.isRecalled)
+      .map(m => {
         let finalContent = m.content;
         if (m.quote) finalContent = `> 引用回复 "${m.quote.name}": ${m.quote.content}\n\n${m.content}`;
-        return { role: m.role, content: m.role === 'model' ? (m.osContent ? `<os>${m.osContent}</os><reply>${finalContent.split('|||').join(' ')}</reply>` : finalContent) : finalContent };
-    });
+        return {
+            role: m.role,
+            content: m.role === 'model' 
+              ? (m.osContent ? `<os>${m.osContent}</os><reply>${finalContent.split('|||').join(' ')}</reply>` : finalContent) 
+              : finalContent
+        };
+      });
 
     let tailInjection = null;
-    if (isOffline) tailInjection = { role: 'system', content: `[System Instruction: You are in OFFLINE/REALITY mode. Maintain immersive description. Ignore WeChat format.]` };
-    else if (isTheater) tailInjection = { role: 'system', content: `[系统指令：当前处于剧场模式。请严格扮演设定角色。]` };
-    else tailInjection = { role: 'system', content: `[系统强制指令]\n用户已回到手机微信界面 (Online Mode)。\n1. **立即停止**任何动作、环境、神态描写。\n2. 必须严格遵守**短句**风格，不使用标点。\n3. 必须使用 **|||** 来分隔多条气泡消息。` };
+    if (isOffline) {
+        tailInjection = { role: 'system', content: `[System Instruction: You are in OFFLINE/REALITY mode. Maintain immersive description. Ignore WeChat format.]` };
+    } else if (isTheater) {
+        tailInjection = { role: 'system', content: `[系统指令：当前处于剧场模式。请严格扮演设定角色。]` };
+    } else {
+        tailInjection = { role: 'system', content: `[系统强制指令]\n用户已回到手机微信界面 (Online Mode)。\n1. **立即停止**任何动作、环境、神态描写。\n2. 必须严格遵守**短句**风格，不使用标点。\n3. 必须使用 **|||** 来分隔多条气泡消息。` };
+    }
 
-    const apiMessages = [{ role: 'system', content: fullSystemPrompt }, ...processedHistory, ...(tailInjection ? [tailInjection] : [])];
+    const apiMessages = [
+      { role: 'system', content: fullSystemPrompt },
+      ...processedHistory,
+      ...(tailInjection ? [tailInjection] : [])
+    ];
+
     const rawResponse = await generateChatCompletion(apiMessages, settings);
 
     const osMatch = rawResponse.match(/<os>([\s\S]*?)<\/os>/);
@@ -222,7 +308,9 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
                 if (p.trim()) processedBubbles.push({ type: 'text', content: p.trim() });
                 if (idx < parts.length - 1) processedBubbles.push({ type: 'nudge', content: `${character.remark} 拍了拍我` });
             });
-        } else { if (rb.trim()) processedBubbles.push({ type: 'text', content: rb.trim() }); }
+        } else {
+            if (rb.trim()) processedBubbles.push({ type: 'text', content: rb.trim() });
+        }
     });
 
     setIsTyping(false);
@@ -230,6 +318,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
     for (let i = 0; i < processedBubbles.length; i++) {
         await new Promise(resolve => setTimeout(resolve, i === 0 ? 300 : 800));
         const item = processedBubbles[i];
+        
         const newMsg: Message = {
             id: Date.now().toString() + i,
             role: item.type === 'nudge' ? 'system' : 'model',
@@ -241,101 +330,158 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
         };
 
         if (isTheater && currentScenario && !currentScenario.isConnected) {
-             const updatedScenarios = currentChar.scenarios?.map(s => s.id === activeScenarioId ? { ...s, messages: [...(s.messages || []), newMsg] } : s) || [];
+             const updatedScenarios = currentChar.scenarios?.map(s => 
+                s.id === activeScenarioId ? { ...s, messages: [...(s.messages || []), newMsg] } : s
+            ) || [];
             onUpdateCharacter({ ...currentChar, scenarios: updatedScenarios });
         } else {
             onAddMessage(currentChar.id, newMsg);
         }
     }
+    
     setGlobalGenerating(false);
   };
 
-  const bindLongPress = (msgId: string) => ({ onContextMenu: (e: any) => { e.preventDefault(); setContextMenuMsgId(msgId); } });
-  const saveCharSettings = () => { onUpdateCharacter(tempCharConfig); setShowCharSettings(false); setShowOfflineSettings(false); };
+  // --- Handlers ---
+
+  const bindLongPress = (msgId: string) => ({
+      onContextMenu: (e: any) => { e.preventDefault(); setContextMenuMsgId(msgId); }
+  });
+
   const handleDeleteMsg = () => {
     if (!contextMenuMsgId) return;
     if (viewMode === 'theater_room' && activeScenario && !activeScenario.isConnected) {
-        const updatedScenarios = (character.scenarios || []).map(s => s.id === activeScenarioId ? { ...s, messages: s.messages?.filter(m => m.id !== contextMenuMsgId) } : s);
+        const updatedScenarios = (character.scenarios || []).map(s => 
+            s.id === activeScenarioId 
+            ? { ...s, messages: s.messages?.filter(m => m.id !== contextMenuMsgId) }
+            : s
+        );
         onUpdateCharacter({ ...character, scenarios: updatedScenarios });
     } else {
         onUpdateCharacter({ ...character, messages: character.messages.filter(m => m.id !== contextMenuMsgId) });
     }
     setContextMenuMsgId(null);
   };
+
   const handleRecallMsg = () => {
     if (!contextMenuMsgId) return;
-    const logic = (msgs: Message[]) => msgs.map(m => m.id === contextMenuMsgId ? { ...m, isRecalled: true, originalContent: m.content, content: '对方撤回了一条消息', osContent: undefined } : m);
+    const logic = (msgs: Message[]) => msgs.map(m => {
+        if (m.id === contextMenuMsgId) return { ...m, isRecalled: true, originalContent: m.content, content: '对方撤回了一条消息', osContent: undefined };
+        return m;
+    });
+
     if (viewMode === 'theater_room' && activeScenario && !activeScenario.isConnected) {
-        const updatedScenarios = (character.scenarios || []).map(s => s.id === activeScenarioId ? { ...s, messages: logic(s.messages || []) } : s);
+        const updatedScenarios = (character.scenarios || []).map(s => 
+            s.id === activeScenarioId ? { ...s, messages: logic(s.messages || []) } : s
+        );
         onUpdateCharacter({ ...character, scenarios: updatedScenarios });
     } else {
         onUpdateCharacter({ ...character, messages: logic(character.messages) });
     }
     setContextMenuMsgId(null);
   };
+
   const handleRegenerate = () => {
     if (!contextMenuMsgId) return;
-    let targetList = (viewMode === 'theater_room' && activeScenario && !activeScenario.isConnected) ? activeScenario.messages || [] : character.messages;
+    
+    let targetList: Message[] = [];
+    let isIsolated = false;
+
+    if (viewMode === 'theater_room' && activeScenario && !activeScenario.isConnected) {
+        targetList = activeScenario.messages || [];
+        isIsolated = true;
+    } else {
+        targetList = character.messages;
+    }
+
     const targetIndex = targetList.findIndex(m => m.id === contextMenuMsgId);
     if (targetIndex === -1) return;
+    
     let rewindIndex = targetIndex;
-    while (rewindIndex >= 0 && targetList[rewindIndex].role === 'model') rewindIndex--;
+    while (rewindIndex >= 0 && targetList[rewindIndex].role === 'model') {
+        rewindIndex--;
+    }
     if (rewindIndex < 0) { setContextMenuMsgId(null); return; }
+    
     const prevMessages = targetList.slice(0, rewindIndex + 1);
     let tempCharState = { ...character };
-    if (viewMode === 'theater_room' && activeScenario && !activeScenario.isConnected) {
-        const updatedScenarios = (character.scenarios || []).map(s => s.id === activeScenarioId ? { ...s, messages: prevMessages } : s);
+    
+    if (isIsolated) {
+        const updatedScenarios = (character.scenarios || []).map(s => 
+            s.id === activeScenarioId ? { ...s, messages: prevMessages } : s
+        );
         onUpdateCharacter({ ...character, scenarios: updatedScenarios });
         tempCharState = { ...character, scenarios: updatedScenarios };
     } else {
         onUpdateCharacter({ ...character, messages: prevMessages });
         tempCharState = { ...character, messages: prevMessages };
     }
-    setContextMenuMsgId(null); setIsTyping(true); setGlobalGenerating(true);
-    fetchAIReply(tempCharState).catch(e => { console.error(e); setIsTyping(false); setGlobalGenerating(false); });
+
+    setContextMenuMsgId(null);
+    setIsTyping(true);
+    setGlobalGenerating(true);
+    fetchAIReply(tempCharState).catch(e => {
+        console.error(e);
+        setIsTyping(false);
+        setGlobalGenerating(false);
+    });
   };
+
   const startEdit = () => {
-      let targetList = (viewMode === 'theater_room' && activeScenario && !activeScenario.isConnected) ? activeScenario.messages : character.messages;
+      let targetList = (viewMode === 'theater_room' && activeScenario && !activeScenario.isConnected) 
+         ? activeScenario.messages 
+         : character.messages;
       const msg = targetList?.find(m => m.id === contextMenuMsgId);
-      if (msg) { setEditContent(msg.content); setEditingMsgId(contextMenuMsgId); }
+      if (msg) {
+          setEditContent(msg.content);
+          setEditingMsgId(contextMenuMsgId);
+      }
       setContextMenuMsgId(null);
   };
+
   const confirmEdit = () => {
       if (!editingMsgId) return;
-      const logic = (msgs: Message[]) => msgs.map(m => m.id === editingMsgId ? { ...m, content: editContent } : m);
+      const logic = (msgs: Message[]) => msgs.map(m => {
+          if (m.id === editingMsgId) return { ...m, content: editContent };
+          return m;
+      });
+
       if (viewMode === 'theater_room' && activeScenario && !activeScenario.isConnected) {
-          const updatedScenarios = (character.scenarios || []).map(s => s.id === activeScenarioId ? { ...s, messages: logic(s.messages || []) } : s);
+          const updatedScenarios = (character.scenarios || []).map(s => 
+              s.id === activeScenarioId ? { ...s, messages: logic(s.messages || []) } : s
+          );
           onUpdateCharacter({ ...character, scenarios: updatedScenarios });
       } else {
           onUpdateCharacter({ ...character, messages: logic(character.messages) });
       }
       setEditingMsgId(null);
   };
+
   const handleQuoteMsg = () => {
       if (!contextMenuMsgId) return;
       const listToSearch = (viewMode === 'theater_room' && activeScenario && !activeScenario.isConnected) ? activeScenario.messages : character.messages;
       const msg = listToSearch?.find(m => m.id === contextMenuMsgId);
-      if (msg && !msg.isRecalled) { setQuotingMsg(msg); inputRef.current?.focus(); }
+      if (msg && !msg.isRecalled) {
+          setQuotingMsg(msg);
+          if (inputRef.current) inputRef.current.focus();
+      }
       setContextMenuMsgId(null);
   };
-  const confirmClearHistory = (clearAll: boolean) => {
-      let updatedChar = { ...tempCharConfig, messages: [] };
-      if (clearAll) { updatedChar.contextMemory = ''; updatedChar.memories = []; }
-      setTempCharConfig(updatedChar);
-      onUpdateCharacter({ ...character, ...updatedChar });
-      setShowClearHistoryModal(false);
-  };
-  const handleUserMaskAvatarUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]; if (file) { const reader = new FileReader(); reader.onload = (ev) => { if (ev.target?.result) setTempCharConfig(prev => ({...prev, userMaskAvatar: ev.target!.result as string})); }; reader.readAsDataURL(file); }
+
+  // --- Common Logic ---
+  const saveCharSettings = () => { onUpdateCharacter(tempCharConfig); setShowCharSettings(false); setShowOfflineSettings(false); };
+  const handleOfflineBackgroundUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) { const reader = new FileReader(); reader.onload = (ev) => { if (ev.target?.result) setTempCharConfig(prev => ({ ...prev, offlineConfig: { ...prev.offlineConfig, bgUrl: ev.target!.result as string } })); }; reader.readAsDataURL(file); }
   };
   const handleCharAvatarUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (file) { const reader = new FileReader(); reader.onload = (ev) => { if (ev.target?.result) setTempCharConfig(prev => ({...prev, avatar: ev.target!.result as string})); }; reader.readAsDataURL(file); }
   };
+  const handleUserMaskAvatarUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]; if (file) { const reader = new FileReader(); reader.onload = (ev) => { if (ev.target?.result) setTempCharConfig(prev => ({...prev, userMaskAvatar: ev.target!.result as string})); }; reader.readAsDataURL(file); }
+  };
   const handleBackgroundUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (file) { const reader = new FileReader(); reader.onload = (ev) => { if (ev.target?.result) setTempCharConfig(prev => ({...prev, chatBackground: ev.target!.result as string})); }; reader.readAsDataURL(file); }
-  };
-  const handleOfflineBackgroundUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]; if (file) { const reader = new FileReader(); reader.onload = (ev) => { if (ev.target?.result) setTempCharConfig(prev => ({ ...prev, offlineConfig: { ...prev.offlineConfig, bgUrl: ev.target!.result as string } })); }; reader.readAsDataURL(file); }
   };
   const toggleMemorySelection = (id: string) => {
     const updatedMemories = character.memories.map(m => m.id === id ? { ...m, selected: !m.selected } : m);
@@ -367,6 +513,49 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
     } catch (e) { console.error(e); }
     setIsTyping(false); setGlobalGenerating(false);
   };
+  const confirmClearHistory = (clearAll: boolean) => {
+      let updatedChar = { ...tempCharConfig, messages: [] };
+      if (clearAll) { updatedChar.contextMemory = ''; updatedChar.memories = []; }
+      setTempCharConfig(updatedChar);
+      onUpdateCharacter({ ...character, ...updatedChar });
+      setShowClearHistoryModal(false);
+  };
+
+  // --- RENDER HELPERS ---
+
+  // Common Modal Render Logic
+  const renderCommonModals = () => (
+      <>
+        {showOSModal && (
+            <div className="absolute top-14 right-4 z-50 w-72 bg-white rounded-xl shadow-2xl border border-gray-200 p-4 animate-fade-in origin-top-right">
+                <div className="flex justify-between items-center mb-3"><h3 className="font-bold text-gray-800 flex items-center gap-2"><i className="fas fa-eye text-indigo-600"></i> 内心 OS 模式</h3><button onClick={() => setShowOSModal(false)} className="text-gray-400 hover:text-gray-600"><i className="fas fa-times"></i></button></div>
+                <div className="flex items-center justify-between mb-4 bg-gray-50 p-2 rounded"><span className="text-sm font-medium">OS 可见性开关</span><div className={`w-10 h-5 rounded-full cursor-pointer relative transition-colors ${character.showOS ? 'bg-green-500' : 'bg-gray-300'}`} onClick={() => onUpdateCharacter({ ...character, showOS: !character.showOS })}><div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full transition-transform shadow ${character.showOS ? 'left-5.5' : 'left-0.5'}`}></div></div></div>
+                <div className="mb-2"><label className="text-xs font-bold text-gray-500 uppercase">OS 生成指令</label><textarea value={tempCharConfig.osSystemPrompt || DEFAULT_OS_PROMPT} onChange={(e) => setTempCharConfig({...tempCharConfig, osSystemPrompt: e.target.value})} onBlur={saveCharSettings} className="w-full h-32 mt-1 p-2 text-[10px] border border-gray-200 rounded bg-gray-50 focus:bg-white focus:outline-none focus:border-indigo-400 resize-none font-mono text-gray-600" /></div>
+            </div>
+        )}
+        {contextMenuMsgId && (
+            <div className="absolute inset-0 z-50 bg-black/20 flex flex-col justify-end" onClick={() => setContextMenuMsgId(null)}>
+                <div className="bg-white rounded-t-2xl p-4 animate-slide-up space-y-2 shadow-2xl" onClick={e => e.stopPropagation()}>
+                    <div className="text-center text-xs text-gray-400 mb-2">对消息进行操作</div>
+                    <div className="grid grid-cols-5 gap-2">
+                        <button onClick={handleRecallMsg} className="flex flex-col items-center gap-1 p-2 rounded-lg active:bg-gray-100"><div className="w-10 h-10 bg-orange-100 text-orange-600 rounded-full flex items-center justify-center"><i className="fas fa-undo"></i></div><span className="text-xs">撤回</span></button>
+                        <button onClick={handleRegenerate} className="flex flex-col items-center gap-1 p-2 rounded-lg active:bg-gray-100"><div className="w-10 h-10 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center"><i className="fas fa-sync-alt"></i></div><span className="text-xs">重回</span></button>
+                        <button onClick={startEdit} className="flex flex-col items-center gap-1 p-2 rounded-lg active:bg-gray-100"><div className="w-10 h-10 bg-green-100 text-green-600 rounded-full flex items-center justify-center"><i className="fas fa-pen"></i></div><span className="text-xs">编辑</span></button>
+                        <button onClick={handleQuoteMsg} className="flex flex-col items-center gap-1 p-2 rounded-lg active:bg-gray-100"><div className="w-10 h-10 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center"><i className="fas fa-quote-right"></i></div><span className="text-xs">引用</span></button>
+                        <button onClick={handleDeleteMsg} className="flex flex-col items-center gap-1 p-2 rounded-lg active:bg-gray-100"><div className="w-10 h-10 bg-red-100 text-red-600 rounded-full flex items-center justify-center"><i className="fas fa-trash"></i></div><span className="text-xs">删除</span></button>
+                    </div>
+                    <button onClick={() => setContextMenuMsgId(null)} className="w-full py-3 mt-2 bg-gray-100 rounded-xl font-bold text-gray-600">取消</button>
+                </div>
+            </div>
+        )}
+        {editingMsgId && (
+            <div className="absolute inset-0 z-50 bg-black/50 flex items-center justify-center p-6"><div className="bg-white w-full rounded-xl p-4 shadow-xl"><h3 className="font-bold mb-2">编辑消息</h3><textarea value={editContent} onChange={(e) => setEditContent(e.target.value)} className="w-full h-32 p-2 border rounded bg-gray-50 focus:outline-none focus:border-green-500 mb-4" /><div className="flex gap-2"><button onClick={() => setEditingMsgId(null)} className="flex-1 py-2 bg-gray-200 rounded">取消</button><button onClick={confirmEdit} className="flex-1 py-2 bg-[#07c160] text-white rounded font-bold">确定</button></div></div></div>
+        )}
+        {showClearHistoryModal && (
+            <div className="absolute inset-0 z-[60] bg-black/50 flex items-center justify-center p-6"><div className="bg-white w-full rounded-xl p-6 shadow-xl animate-slide-up"><h3 className="font-bold text-lg text-red-600 mb-4 flex items-center gap-2"><i className="fas fa-exclamation-triangle"></i> 确认清空</h3><div className="space-y-3"><button onClick={() => confirmClearHistory(false)} className="w-full py-3 bg-gray-100 text-gray-800 rounded-xl font-bold hover:bg-gray-200">仅清空消息</button><button onClick={() => confirmClearHistory(true)} className="w-full py-3 bg-red-100 text-red-600 rounded-xl font-bold hover:bg-red-200">彻底清空 (含记忆)</button><button onClick={() => setShowClearHistoryModal(false)} className="w-full py-3 border border-gray-200 text-gray-500 rounded-xl font-medium mt-2">取消</button></div></div></div>
+        )}
+      </>
+  );
 
   const renderImmersiveList = (messages: Message[], bgColor?: string) => (
       <div className="flex-1 overflow-y-auto p-6 space-y-8 no-scrollbar relative z-10" ref={messagesEndRef}>
@@ -410,6 +599,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
         <div ref={messagesEndRef} />
     </div>
   );
+
+  // --- VIEW RENDERERS ---
 
   if (viewMode === 'theater_list') {
       return (
@@ -479,6 +670,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
                       </div>
                   </div>
               )}
+              {/* RENDER MODALS IN THEATER VIEW */}
+              {renderCommonModals()}
           </div>
       );
   }
@@ -506,6 +699,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
                        </div>
                    </div>
                )}
+               {/* RENDER MODALS IN OFFLINE VIEW */}
+               {renderCommonModals()}
           </div>
       );
   }
@@ -532,34 +727,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
             </div>
         )}
       </div>
-      {showOSModal && (
-         <div className="absolute top-14 right-4 z-50 w-72 bg-white rounded-xl shadow-2xl border border-gray-200 p-4 animate-fade-in origin-top-right">
-              <div className="flex justify-between items-center mb-3"><h3 className="font-bold text-gray-800 flex items-center gap-2"><i className="fas fa-eye text-indigo-600"></i> 内心 OS 模式</h3><button onClick={() => setShowOSModal(false)} className="text-gray-400 hover:text-gray-600"><i className="fas fa-times"></i></button></div>
-              <div className="flex items-center justify-between mb-4 bg-gray-50 p-2 rounded"><span className="text-sm font-medium">OS 可见性开关</span><div className={`w-10 h-5 rounded-full cursor-pointer relative transition-colors ${character.showOS ? 'bg-green-500' : 'bg-gray-300'}`} onClick={() => onUpdateCharacter({ ...character, showOS: !character.showOS })}><div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full transition-transform shadow ${character.showOS ? 'left-5.5' : 'left-0.5'}`}></div></div></div>
-              <div className="mb-2"><label className="text-xs font-bold text-gray-500 uppercase">OS 生成指令</label><textarea value={tempCharConfig.osSystemPrompt || DEFAULT_OS_PROMPT} onChange={(e) => setTempCharConfig({...tempCharConfig, osSystemPrompt: e.target.value})} onBlur={saveCharSettings} className="w-full h-32 mt-1 p-2 text-[10px] border border-gray-200 rounded bg-gray-50 focus:bg-white focus:outline-none focus:border-indigo-400 resize-none font-mono text-gray-600" /></div>
-          </div>
-      )}
-      {contextMenuMsgId && (
-          <div className="absolute inset-0 z-50 bg-black/20 flex flex-col justify-end" onClick={() => setContextMenuMsgId(null)}>
-              <div className="bg-white rounded-t-2xl p-4 animate-slide-up space-y-2 shadow-2xl" onClick={e => e.stopPropagation()}>
-                  <div className="text-center text-xs text-gray-400 mb-2">对消息进行操作</div>
-                  <div className="grid grid-cols-5 gap-2">
-                      <button onClick={handleRecallMsg} className="flex flex-col items-center gap-1 p-2 rounded-lg active:bg-gray-100"><div className="w-10 h-10 bg-orange-100 text-orange-600 rounded-full flex items-center justify-center"><i className="fas fa-undo"></i></div><span className="text-xs">撤回</span></button>
-                      <button onClick={handleRegenerate} className="flex flex-col items-center gap-1 p-2 rounded-lg active:bg-gray-100"><div className="w-10 h-10 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center"><i className="fas fa-sync-alt"></i></div><span className="text-xs">重回</span></button>
-                      <button onClick={startEdit} className="flex flex-col items-center gap-1 p-2 rounded-lg active:bg-gray-100"><div className="w-10 h-10 bg-green-100 text-green-600 rounded-full flex items-center justify-center"><i className="fas fa-pen"></i></div><span className="text-xs">编辑</span></button>
-                      <button onClick={handleQuoteMsg} className="flex flex-col items-center gap-1 p-2 rounded-lg active:bg-gray-100"><div className="w-10 h-10 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center"><i className="fas fa-quote-right"></i></div><span className="text-xs">引用</span></button>
-                      <button onClick={handleDeleteMsg} className="flex flex-col items-center gap-1 p-2 rounded-lg active:bg-gray-100"><div className="w-10 h-10 bg-red-100 text-red-600 rounded-full flex items-center justify-center"><i className="fas fa-trash"></i></div><span className="text-xs">删除</span></button>
-                  </div>
-                  <button onClick={() => setContextMenuMsgId(null)} className="w-full py-3 mt-2 bg-gray-100 rounded-xl font-bold text-gray-600">取消</button>
-              </div>
-          </div>
-      )}
-      {editingMsgId && (
-          <div className="absolute inset-0 z-50 bg-black/50 flex items-center justify-center p-6"><div className="bg-white w-full rounded-xl p-4 shadow-xl"><h3 className="font-bold mb-2">编辑消息</h3><textarea value={editContent} onChange={(e) => setEditContent(e.target.value)} className="w-full h-32 p-2 border rounded bg-gray-50 focus:outline-none focus:border-green-500 mb-4" /><div className="flex gap-2"><button onClick={() => setEditingMsgId(null)} className="flex-1 py-2 bg-gray-200 rounded">取消</button><button onClick={confirmEdit} className="flex-1 py-2 bg-[#07c160] text-white rounded font-bold">确定</button></div></div></div>
-      )}
-      {showClearHistoryModal && (
-          <div className="absolute inset-0 z-[60] bg-black/50 flex items-center justify-center p-6"><div className="bg-white w-full rounded-xl p-6 shadow-xl animate-slide-up"><h3 className="font-bold text-lg text-red-600 mb-4 flex items-center gap-2"><i className="fas fa-exclamation-triangle"></i> 确认清空</h3><div className="space-y-3"><button onClick={() => confirmClearHistory(false)} className="w-full py-3 bg-gray-100 text-gray-800 rounded-xl font-bold hover:bg-gray-200">仅清空消息</button><button onClick={() => confirmClearHistory(true)} className="w-full py-3 bg-red-100 text-red-600 rounded-xl font-bold hover:bg-red-200">彻底清空 (含记忆)</button><button onClick={() => setShowClearHistoryModal(false)} className="w-full py-3 border border-gray-200 text-gray-500 rounded-xl font-medium mt-2">取消</button></div></div></div>
-      )}
+      {/* RENDER MODALS IN ONLINE VIEW */}
+      {renderCommonModals()}
       {showCharSettings && (
           <div className="absolute inset-0 bg-gray-100 z-50 flex flex-col animate-slide-up">
               <div className="bg-white p-4 shadow-sm flex items-center justify-between sticky top-0"><button onClick={() => setShowCharSettings(false)} className="text-gray-600 font-medium">取消</button><h3 className="font-bold text-lg">聊天信息</h3><button onClick={saveCharSettings} className="bg-[#07c160] text-white px-3 py-1 rounded font-bold text-sm">完成</button></div>
