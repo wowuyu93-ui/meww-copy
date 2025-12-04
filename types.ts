@@ -52,6 +52,26 @@ export interface UserDiaryEntry {
   isExpanded?: boolean;
 }
 
+export interface Comment {
+  id: string;
+  authorId: string;
+  authorName: string;
+  content: string;
+  timestamp: number;
+  isAi?: boolean;
+}
+
+export interface Moment {
+  id: string;
+  authorId: string;
+  content: string;
+  images?: string[];
+  timestamp: number;
+  likes: string[];
+  comments: Comment[];
+  visibleTo?: string[];
+}
+
 export interface FurnaceConfig {
   autoEnabled: boolean;
   autoThreshold: number;
@@ -78,11 +98,19 @@ export interface Scenario {
   messages?: Message[];
 }
 
+export interface StyleConfig {
+  onlineUser: string;
+  onlineModel: string;
+  offlineUser: string;
+  offlineModel: string;
+}
+
 export interface GlobalPersona {
   name: string;
   avatar: string;
   description: string;
   diaries: UserDiaryEntry[];
+  moments: Moment[];
 }
 
 export interface Character {
@@ -101,6 +129,8 @@ export interface Character {
   userMaskDescription?: string;
   realTimeMode: boolean;
   chatBackground?: string;
+  chatFontSize?: number; 
+  styleConfig?: StyleConfig;
   contextMemory: string;
   historyCount: number;
   furnaceConfig: FurnaceConfig;
@@ -109,6 +139,9 @@ export interface Character {
   memories: MemoryCard[];
   messages: Message[];
   diaries: DiaryEntry[];
+  diaryStyle?: string; 
+  moments: Moment[]; 
+  autoPostMoments: boolean; 
   isPinned?: boolean;
   unread?: number;
 }
@@ -125,8 +158,8 @@ export interface AppSettings {
   wallpaper: string;
   fullScreenMode: boolean;
   customFont?: string;
-  immersiveFontSize?: number; // New setting
-  widgets?: Widget[]; // New setting
+  immersiveFontSize?: number;
+  widgets?: Widget[];
   availableModels: string[];
   globalPersona: GlobalPersona;
 }

@@ -88,11 +88,24 @@ const SettingsApp: React.FC<SettingsProps> = ({ settings, updateSettings, charac
             settings: settings,
             characters: characters.map(c => ({
                 ...c,
+                // Ensure messages are sliced but keep existing structure
                 messages: Array.isArray(c.messages) ? c.messages.slice(-50) : [],
-                scenarios: c.scenarios?.map(s => ({
+                // Deep copy nested structures to avoid reference issues or missing keys
+                scenarios: Array.isArray(c.scenarios) ? c.scenarios.map(s => ({
                     ...s,
                     messages: s.messages ? s.messages.slice(-50) : []
-                }))
+                })) : [],
+                moments: Array.isArray(c.moments) ? c.moments : [],
+                diaries: Array.isArray(c.diaries) ? c.diaries : [],
+                memories: Array.isArray(c.memories) ? c.memories : [],
+                styleConfig: c.styleConfig || undefined,
+                furnaceConfig: c.furnaceConfig || DEFAULT_FURNACE_CONFIG,
+                offlineConfig: c.offlineConfig || DEFAULT_OFFLINE_CONFIG,
+                // Ensure all boolean flags are preserved
+                showOS: c.showOS ?? false,
+                realTimeMode: c.realTimeMode ?? false,
+                useLocalPersona: c.useLocalPersona ?? false,
+                autoPostMoments: c.autoPostMoments ?? true
             }))
         };
 
@@ -163,10 +176,13 @@ const SettingsApp: React.FC<SettingsProps> = ({ settings, updateSettings, charac
                   scenarios: Array.isArray(c.scenarios) ? c.scenarios : [],
                   diaries: Array.isArray(c.diaries) ? c.diaries : [],
                   memories: Array.isArray(c.memories) ? c.memories : [],
+                  moments: Array.isArray(c.moments) ? c.moments : [],
                   messages: Array.isArray(c.messages) ? c.messages : [],
+                  styleConfig: c.styleConfig || undefined,
                   useLocalPersona: c.useLocalPersona ?? false,
                   realTimeMode: c.realTimeMode ?? false,
-                  showOS: c.showOS ?? false
+                  showOS: c.showOS ?? false,
+                  autoPostMoments: c.autoPostMoments ?? true
               }));
               onUpdateCharacters(sanitizedChars);
           }
@@ -194,7 +210,7 @@ const SettingsApp: React.FC<SettingsProps> = ({ settings, updateSettings, charac
     <div className="h-full bg-gray-100 flex flex-col text-black overflow-y-auto relative">
       <div className="bg-white p-4 shadow flex items-center sticky top-0 z-10 justify-between">
         <div className="flex items-center">
-            <button onClick={onClose} className="mr-4 text-gray-600 active:text-gray-900"><i className="fas fa-arrow-left text-xl"></i></button>
+            <button onClick={onClose} className="mr-4 text-gray-600 active:text-gray-900"><i className="fas fa-home text-xl"></i></button>
             <h1 className="text-xl font-bold">系统设置</h1>
         </div>
       </div>
@@ -203,7 +219,7 @@ const SettingsApp: React.FC<SettingsProps> = ({ settings, updateSettings, charac
         <div className="bg-blue-50 p-4 rounded-xl border border-blue-100">
              <h2 className="font-bold text-blue-800 mb-2 flex items-center gap-2"><i className="fas fa-info-circle"></i> 关于小手机</h2>
              <p className="text-xs text-blue-600 leading-relaxed font-bold">⚠️ 请务必经常使用下方的【导出备份】功能！</p>
-             <p className="text-[10px] text-blue-400 mt-2">Version 2.1 (Widgets & UI Fixes)</p>
+             <p className="text-[10px] text-blue-400 mt-2">Version 2.2 (Moments Update)</p>
         </div>
 
         <div className="bg-white p-4 rounded-xl shadow-sm flex items-center justify-between">

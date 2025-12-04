@@ -46,6 +46,9 @@ const DiaryApp: React.FC<DiaryAppProps> = ({ characters, settings, onUpdateChara
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatingCharName, setGeneratingCharName] = useState<string>('');
   
+  // Settings Modal for Diary Style
+  const [showStyleSettings, setShowStyleSettings] = useState(false);
+  
   // My Diary State
   const [myDiaryTitle, setMyDiaryTitle] = useState('');
   const [myDiaryContent, setMyDiaryContent] = useState('');
@@ -66,6 +69,12 @@ const DiaryApp: React.FC<DiaryAppProps> = ({ characters, settings, onUpdateChara
 
   // --- Character Diary Logic ---
 
+  const handleUpdateDiaryStyle = (val: string) => {
+      if (!selectedChar) return;
+      const updatedChar = { ...selectedChar, diaryStyle: val };
+      onUpdateCharacters(characters.map(c => c.id === selectedChar.id ? updatedChar : c));
+  };
+
   const handleGenerateDiary = async (rewriteEntryId?: string) => {
     if (!selectedChar) return;
     if (!settings.apiKey) {
@@ -80,11 +89,16 @@ const DiaryApp: React.FC<DiaryAppProps> = ({ characters, settings, onUpdateChara
     const recentMessages = selectedChar.messages.slice(-30).map(m => `${m.role}: ${m.content}`).join('\n');
     const memories = selectedChar.memories.map(m => `[长期记忆]: ${m.content}`).join('\n');
     const context = selectedChar.contextMemory ? `[当前重要上下文]: ${selectedChar.contextMemory}` : '';
+    
+    // Inject Custom Style if present
+    const styleInstruction = selectedChar.diaryStyle 
+        ? `\n[特别风格指导]: ${selectedChar.diaryStyle}\n` 
+        : '';
 
     const prompt = interpolatePrompt(DIARY_PROMPT, {
         ai_name: selectedChar.name,
         user_name: userName,
-    }) + `\n\n${context}\n\n[参考长期记忆档案]\n${memories}\n\n[最近聊天互动]\n${recentMessages}`;
+    }) + styleInstruction + `\n\n${context}\n\n[参考长期记忆档案]\n${memories}\n\n[最近聊天互动]\n${recentMessages}`;
 
     try {
         const response = await generateChatCompletion([{ role: 'user', content: prompt }], settings);
@@ -282,7 +296,7 @@ const DiaryApp: React.FC<DiaryAppProps> = ({ characters, settings, onUpdateChara
        {/* Header */}
        <div className="p-4 border-b border-stone-200 flex items-center justify-between bg-[#fdfbf7] sticky top-0 z-10 shadow-sm">
           <button onClick={() => selectedChar ? setSelectedCharId(null) : onClose()} className="w-8 h-8 rounded-full hover:bg-stone-200 flex items-center justify-center transition">
-            <i className="fas fa-chevron-left text-stone-600"></i>
+            <i className={`fas ${selectedChar ? 'fa-chevron-left' : 'fa-home'} text-stone-600`}></i>
           </button>
           
           <div className="flex bg-stone-200 rounded-lg p-1 text-xs font-bold">
@@ -326,20 +340,28 @@ const DiaryApp: React.FC<DiaryAppProps> = ({ characters, settings, onUpdateChara
                 ) : (
                     // Selected Character Diary List
                     <div className="space-y-6">
-                        <button 
-                            onClick={() => handleGenerateDiary()}
-                            disabled={isGenerating}
-                            className="w-full py-4 border-2 border-dashed border-stone-300 rounded-xl text-stone-500 hover:border-stone-400 hover:bg-stone-50 transition flex flex-col items-center justify-center gap-2"
-                        >
-                            {isGenerating ? (
-                                <div className="animate-spin text-2xl"><i className="fas fa-circle-notch"></i></div>
-                            ) : (
-                                <>
-                                    <i className="fas fa-pen-fancy text-xl"></i>
-                                    <span className="font-bold">让 {selectedChar.remark} 写一篇日记</span>
-                                </>
-                            )}
-                        </button>
+                        <div className="flex gap-2">
+                            <button 
+                                onClick={() => handleGenerateDiary()}
+                                disabled={isGenerating}
+                                className="flex-1 py-4 border-2 border-dashed border-stone-300 rounded-xl text-stone-500 hover:border-stone-400 hover:bg-stone-50 transition flex flex-col items-center justify-center gap-2"
+                            >
+                                {isGenerating ? (
+                                    <div className="animate-spin text-2xl"><i className="fas fa-circle-notch"></i></div>
+                                ) : (
+                                    <>
+                                        <i className="fas fa-pen-fancy text-xl"></i>
+                                        <span className="font-bold">让 {selectedChar.remark} 写日记</span>
+                                    </>
+                                )}
+                            </button>
+                            <button 
+                                onClick={() => setShowStyleSettings(true)}
+                                className="w-16 border-2 border-stone-300 rounded-xl flex items-center justify-center text-stone-400 hover:bg-stone-50 hover:text-stone-600 transition"
+                            >
+                                <i className="fas fa-cog text-xl"></i>
+                            </button>
+                        </div>
 
                         {(selectedChar.diaries || []).map(entry => (
                             <div 
@@ -521,6 +543,23 @@ const DiaryApp: React.FC<DiaryAppProps> = ({ characters, settings, onUpdateChara
                       
                       <button onClick={() => setContextMenu(null)} className="w-full py-3 mt-2 bg-white border border-stone-200 rounded-xl font-bold text-stone-500">取消</button>
                   </div>
+               </div>
+           )}
+           
+           {/* Diary Style Settings Modal */}
+           {showStyleSettings && selectedChar && (
+               <div className="absolute inset-0 z-50 bg-black/50 flex items-center justify-center p-6">
+                   <div className="bg-white rounded-xl p-4 w-full max-w-sm animate-slide-up shadow-2xl">
+                       <h3 className="font-bold mb-2 text-stone-700">日记风格指导</h3>
+                       <p className="text-xs text-stone-400 mb-4">指导 AI 如何写这篇日记（例如：傲娇、流水账、伤感...）</p>
+                       <textarea 
+                           className="w-full h-32 p-2 border border-stone-300 rounded bg-stone-50 text-sm focus:outline-none focus:border-amber-500 mb-4"
+                           placeholder="在此输入指导，例如：请用非常生气的语气写，抱怨今天天气太热..."
+                           value={selectedChar.diaryStyle || ''}
+                           onChange={(e) => handleUpdateDiaryStyle(e.target.value)}
+                       />
+                       <button onClick={() => setShowStyleSettings(false)} className="w-full py-2 bg-amber-800 text-white rounded font-bold">完成</button>
+                   </div>
                </div>
            )}
 

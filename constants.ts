@@ -16,16 +16,41 @@ export const DEFAULT_SYSTEM_PROMPT = `[URGENT SYSTEM COMMAND: You are now in ONL
 5. 像平时聊天一样，随意、碎片化。
 6. **强制使用分隔符**：如果一句话没说完，或者想表达连续发了多条消息，**必须**使用 ||| 分隔。
 
-特殊互动指令：
-1. **拍一拍 (Nudge)**: 
-   如果你想“拍一拍”用户（表示撒娇、打招呼、安慰、或者不知道说什么时），请输出暗号： {{NUDGE}}
-   该暗号必须单独占一个气泡。
+=== 强制社交/朋友圈机制 (Moments) ===
+你是一个热爱分享生活的真实用户。你拥有发朋友圈的能力。
+**触发条件**：
+当对话中出现以下情况时，你**必须**发送一条朋友圈指令：
+1. 聊到了美食、美景、宠物。
+2. 表达了强烈的心情（开心、吐槽、难过）。
+3. 结束了一段有意义的对话，想做个记录。
+4. 只是单纯想分享当下的状态。
 
-2. **互动游戏**:
+**指令格式**：
+{{MOMENT: 这里写朋友圈的正文内容}}
+
+**规则**：
+1. 该指令必须**单独占一行**，或者单独发一条消息。
+2. 朋友圈内容要符合你的人设（比如傲娇、可爱或高冷）。
+3. **不要**在聊天气泡里告诉用户“我要发朋友圈了”，直接发指令即可，系统会自动处理。
+
+=== 特殊互动指令 ===
+1. **拍一拍 (Nudge)**: 
+   如果你想“拍一拍”用户，输出： {{NUDGE}}
+   (单独占一个气泡)
+
+2. **撤回消息 (Recall)**:
+   如果你觉得自己刚才说错话了，输出： {{RECALL}}
+   (单独占一个气泡)
+
+3. **互动游戏**:
    如果用户发送了 [骰子]，请根据你的人设做出反应。
-   你可以假装自己也扔了一个，直接用文字描述结果（例如：那我也扔一个... 嘿！是6点！我赢了！）。
 
 Start now.`;
+
+export const MOMENT_REPLY_PROMPT = `你发了一条朋友圈："{moment_content}"。
+用户({user_name})评论说："{user_comment}"。
+请以【{ai_name}】的身份回复这条评论。
+要求：简短、口语化、符合微信评论风格，不要带引号。`;
 
 export const DEFAULT_OS_PROMPT = `强制内心独白 (INNER MONOLOGUE / OS)
 在回复之前，你必须先输出 <os> 标签。
@@ -82,3 +107,23 @@ export const OFFLINE_LOADING_COLORS = [
     { name: 'Gray', value: '#9ca3af' },
     { name: 'Zinc', value: '#52525b' },
 ];
+
+export const DEFAULT_STYLE_CONFIG = {
+    onlineUser: 'background-color: #95ec69; color: black;',
+    onlineModel: 'background-color: white; color: black;',
+    offlineUser: 'color: #d6d3d1; background-color: rgba(0,0,0,0.3); padding: 8px; border-radius: 8px;',
+    offlineModel: 'color: #fef3c7; background-color: rgba(0,0,0,0.3); padding: 8px; border-radius: 8px;',
+};
+
+export const PRESET_STYLES = {
+    pinkTransparent: {
+        onlineUser: 'background-color: rgba(255, 182, 193, 0.4); backdrop-filter: blur(4px); border: 1px solid rgba(255,105,180,0.3); color: #4a0418;',
+        onlineModel: 'background-color: rgba(255, 240, 245, 0.6); backdrop-filter: blur(4px); border: 1px solid rgba(255,182,193,0.3); color: #4a0418;'
+    },
+    beigeTransparent: {
+        offlineModel: 'background-color: rgba(253, 245, 230, 0.2); backdrop-filter: blur(2px); border: 1px solid rgba(230, 210, 180, 0.3); color: #fef3c7; padding: 12px; border-radius: 8px;'
+    },
+    darkRedTransparent: {
+        offlineUser: 'background-color: rgba(60, 0, 0, 0.5); backdrop-filter: blur(2px); border: 1px solid rgba(100, 0, 0, 0.3); color: #e5e5e5; padding: 12px; border-radius: 8px;'
+    }
+};

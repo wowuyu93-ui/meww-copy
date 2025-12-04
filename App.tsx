@@ -30,7 +30,8 @@ const App: React.FC = () => {
         name: '我',
         avatar: 'https://ui-avatars.com/api/?name=Me&background=07c160&color=fff',
         description: '一个普通用户',
-        diaries: []
+        diaries: [],
+        moments: []
       }
     };
     
@@ -45,7 +46,8 @@ const App: React.FC = () => {
             globalPersona: {
                 ...defaultSettings.globalPersona,
                 ...(parsed.globalPersona || {}),
-                diaries: parsed.globalPersona?.diaries || []
+                diaries: parsed.globalPersona?.diaries || [],
+                moments: parsed.globalPersona?.moments || []
             }
         };
     }
@@ -183,22 +185,6 @@ const App: React.FC = () => {
                   <span className="text-xs font-medium shadow-black drop-shadow-md">相机</span>
                </button>
             </div>
-            
-            {/* Dock Area */}
-            <div className="absolute bottom-6 left-4 right-4 bg-white/20 backdrop-blur-md rounded-[2rem] p-4 flex justify-around items-center border border-white/10 shadow-2xl z-20">
-                <div className="w-12 h-12 bg-[#4cd964] rounded-xl flex items-center justify-center shadow-lg transform hover:-translate-y-1 transition">
-                    <i className="fas fa-phone text-white text-xl"></i>
-                </div>
-                <div className="w-12 h-12 bg-[#5ac8fa] rounded-xl flex items-center justify-center shadow-lg transform hover:-translate-y-1 transition">
-                    <i className="fas fa-compass text-white text-xl"></i>
-                </div>
-                <div className="w-12 h-12 bg-[#ffcc00] rounded-xl flex items-center justify-center shadow-lg transform hover:-translate-y-1 transition">
-                     <i className="fas fa-envelope text-white text-xl"></i>
-                </div>
-                <div className="w-12 h-12 bg-[#ff2d55] rounded-xl flex items-center justify-center shadow-lg transform hover:-translate-y-1 transition">
-                     <i className="fas fa-music text-white text-xl"></i>
-                </div>
-            </div>
           </div>
         );
     }
@@ -237,11 +223,6 @@ const App: React.FC = () => {
         {/* Main View Area (Fully Stretched) */}
         <div className="flex-1 w-full h-full relative overflow-hidden">
             {renderScreen()}
-        </div>
-        
-        {/* Floating Home Bar (Overlay) */}
-        <div className="absolute bottom-1 left-0 right-0 h-5 flex justify-center items-center z-[100] cursor-pointer pb-2" onClick={() => setRoute(AppRoute.HOME)}>
-           <div className="w-32 h-1 bg-white/50 rounded-full shadow-sm hover:bg-white transition-colors backdrop-blur-md"></div>
         </div>
       </div>
     </div>

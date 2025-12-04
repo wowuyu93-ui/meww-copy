@@ -1,3 +1,4 @@
+
 import { Message, AppSettings } from '../types';
 
 // Helper to replace template variables
