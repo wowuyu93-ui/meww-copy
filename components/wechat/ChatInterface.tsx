@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import { Character, Message, AppSettings, Moment, Scenario, MemoryCard, StyleConfig } from '../../types';
 import { generateChatCompletion, interpolatePrompt } from '../../services/aiService';
@@ -142,7 +141,6 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
     if (!contentToSend && !getReply) return; 
     
     // Create optimistic character state for AI context
-    // BUT DO NOT update state directly with it, use functional updates for persistent storage
     let updatedCharForAI = { ...character }; 
 
     if (contentToSend) {
@@ -164,7 +162,6 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
             });
         } else {
             onAddMessage(character.id, newMessage);
-            // Construct optimistic AI context
             updatedCharForAI = { ...character, messages: [...character.messages, newMessage] }; 
         }
         setInputValue('');
@@ -175,14 +172,11 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
     if (getReply) {
       setIsTyping(true);
       setGlobalGenerating(true); 
-      // Note: updatedCharForAI might still be slightly stale if used inside async immediately, 
-      // but better than raw 'character'. Ideally we use the raw content.
       try { await fetchAIReply(updatedCharForAI); } catch (e) { console.error(e); setIsTyping(false); setGlobalGenerating(false); }
     }
   };
 
   const handleForceMoment = () => {
-      // Directly inject a moment to verify UI works, bypassing AI uncertainty
       const newMoment: Moment = {
           id: Date.now().toString(),
           authorId: character.id,
@@ -192,7 +186,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
           comments: []
       };
       onUpdateCharacter(prev => ({ ...prev, moments: [newMoment, ...(prev.moments || [])] }));
-      if (onShowNotification) onShowNotification("测试朋友圈已发布");
+      if (onShowNotification) onShowNotification(`${character.remark} 发布了朋友圈 (测试)`);
       setShowDrawer(false);
   };
 
@@ -289,8 +283,6 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
         }, 2000);
     }
 
-    // Improved Regex for Moments (Case Insensitive, flexible spacing, optional braces if desperate)
-    // Matches {{MOMENT: content}} OR {{ moment : content }}
     const momentMatch = replyContent.match(/\{\{\s*MOMENT\s*:\s*([\s\S]*?)\s*\}\}/i);
     if (momentMatch) {
         const momentContent = momentMatch[1].trim();
@@ -303,7 +295,6 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
             likes: [], 
             comments: [] 
         };
-        // FUNCTIONAL UPDATE
         onUpdateCharacter(prev => ({ ...prev, moments: [newMoment, ...(prev.moments || [])] }));
         if (onShowNotification) onShowNotification(`${currentChar.remark} 发布了朋友圈`);
     }
@@ -338,7 +329,6 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
         };
 
         if (isTheater && currentScenario && !currentScenario.isConnected) {
-             // Functional Update for isolated scenarios
              onUpdateCharacter(prev => ({ 
                  ...prev, 
                  scenarios: prev.scenarios?.map(s => s.id === activeScenarioId ? { ...s, messages: [...(s.messages || []), newMsg] } : s)
@@ -388,7 +378,6 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
       {showClearHistoryModal && (<div className="absolute inset-0 z-50 bg-black/50 flex items-center justify-center p-6"><div className="bg-white w-full max-w-sm rounded-xl p-6 shadow-2xl animate-fade-in"><h3 className="text-gray-900 font-bold text-lg mb-4">清空确认</h3><div className="flex flex-col gap-2"><button onClick={() => confirmClearHistory(false)} className="w-full py-3 bg-red-50 text-red-700 font-bold rounded-lg hover:bg-red-100">仅清空聊天记录</button><button onClick={() => confirmClearHistory(true)} className="w-full py-3 bg-red-600 text-white font-bold rounded-lg">完全重置</button><button onClick={() => setShowClearHistoryModal(false)} className="w-full py-3 text-gray-500 font-bold">取消</button></div></div></div>)}
       {showOSModal && (<div className="absolute inset-0 z-50 bg-black/50 flex items-center justify-center p-6"><div className="bg-white w-full max-w-sm rounded-xl p-6 shadow-2xl relative animate-slide-up"><button onClick={() => setShowOSModal(false)} className="absolute top-2 right-2 text-gray-400 w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100"><i className="fas fa-times"></i></button><h3 className="font-bold text-indigo-600 mb-4 flex items-center gap-2">内心独白 (OS)</h3><div className="bg-indigo-50 p-3 rounded-lg mb-4 flex items-center justify-between"><div><div className="font-bold text-indigo-900 text-sm">OS 开关</div></div><label className="relative inline-flex items-center cursor-pointer"><input type="checkbox" className="sr-only peer" checked={character.showOS || false} onChange={(e) => onUpdateCharacter(prev => ({...prev, showOS: e.target.checked}))}/><div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div></label></div><textarea className="w-full h-32 p-2 border border-gray-200 rounded text-xs bg-gray-50 focus:outline-none focus:border-indigo-500 font-mono text-gray-600" value={character.osSystemPrompt || DEFAULT_OS_PROMPT} onChange={(e) => onUpdateCharacter(prev => ({...prev, osSystemPrompt: e.target.value}))}/></div></div>)}
       {editingMsgId && (<div className="absolute inset-0 z-50 bg-black/50 flex items-center justify-center p-4"><div className="bg-white w-full max-w-sm rounded-xl p-4 shadow-2xl animate-slide-up"><h3 className="font-bold mb-2 text-gray-700">编辑消息</h3><textarea value={editContent} onChange={e => setEditContent(e.target.value)} className="w-full h-32 border p-2 rounded mb-4 focus:outline-none focus:border-blue-500 resize-none bg-gray-50"/><div className="flex gap-3"><button onClick={() => setEditingMsgId(null)} className="flex-1 py-2 bg-gray-100 text-gray-600 rounded font-bold">取消</button><button onClick={confirmEdit} className="flex-1 py-2 bg-blue-600 text-white rounded font-bold">保存</button></div></div></div>)}
-      {/* Memory Furnace Modal */}
       {showMemoryFurnace && (
         <div className="absolute inset-0 bg-black/50 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 animate-fade-in">
             <div className="bg-[#f2f2f2] w-full h-[90%] sm:h-[650px] sm:rounded-2xl rounded-t-2xl flex flex-col shadow-2xl animate-slide-up">
@@ -416,6 +405,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
   );
 
   // --- AUTO SUMMARIZE TRIGGER EFFECT ---
+  // Moved to bottom to avoid ReferenceError
   useEffect(() => {
       if (character.furnaceConfig?.autoEnabled && !isGlobalGenerating) {
           const msgs = character.messages;
