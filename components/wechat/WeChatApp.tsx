@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, Dispatch, SetStateAction } from 'react';
 import { Character, AppSettings, WeChatTab, Message, Moment, Comment } from '../../types';
 import { DEFAULT_SYSTEM_PROMPT, DEFAULT_OFFLINE_PROMPT, DEFAULT_OS_PROMPT, MOMENT_REPLY_PROMPT } from '../../constants';
 import { generateChatCompletion, interpolatePrompt } from '../../services/aiService';
@@ -7,9 +7,9 @@ import ChatInterface from './ChatInterface';
 
 interface WeChatAppProps {
   settings: AppSettings;
-  onUpdateSettings: (s: AppSettings) => void;
+  onUpdateSettings: Dispatch<SetStateAction<AppSettings>>;
   characters: Character[];
-  onUpdateCharacters: (chars: Character[] | ((prev: Character[]) => Character[])) => void;
+  onUpdateCharacters: Dispatch<SetStateAction<Character[]>>;
   onClose: () => void;
 }
 
@@ -127,7 +127,7 @@ const WeChatApp: React.FC<WeChatAppProps> = ({ settings, onUpdateSettings, chara
       scenarios: [], memories: [], messages: [], diaries: [], moments: [], autoPostMoments: true, unread: 0,
       realTimeMode: false
     };
-    onUpdateCharacters([...characters, char]);
+    onUpdateCharacters((prev) => [...prev, char]);
     setIsCreating(false);
     setNewChar({});
     setActiveTab(WeChatTab.CHATS);
@@ -166,7 +166,7 @@ const WeChatApp: React.FC<WeChatAppProps> = ({ settings, onUpdateSettings, chara
       if (!newMomentContent) return;
       const newMomentId = Date.now().toString();
       const newMoment: Moment = { id: newMomentId, authorId: 'USER', content: newMomentContent, timestamp: Date.now(), likes: [], comments: [], visibleTo: momentVisibility.length > 0 ? momentVisibility : undefined };
-      onUpdateSettings({ ...settings, globalPersona: { ...settings.globalPersona, moments: [newMoment, ...(settings.globalPersona.moments || [])] } });
+      onUpdateSettings(prev => ({ ...prev, globalPersona: { ...prev.globalPersona, moments: [newMoment, ...(prev.globalPersona.moments || [])] } }));
       setIsPostingMoment(false);
       handleShowNotification("发布成功！好友可能会互动哦...");
       setTimeout(() => simulateAiInteractions(newMomentId, newMomentContent), 3000);
@@ -222,9 +222,8 @@ const WeChatApp: React.FC<WeChatAppProps> = ({ settings, onUpdateSettings, chara
   const handleRefreshMoments = () => { setIsRefreshingMoments(true); setTimeout(() => setIsRefreshingMoments(false), 1000); };
   const handleAvatarUpload = (e: React.ChangeEvent<HTMLInputElement>) => { const file = e.target.files?.[0]; if (file) { const reader = new FileReader(); reader.onloadend = () => { if (reader.result) setNewChar(prev => ({ ...prev, avatar: reader.result as string })); }; reader.readAsDataURL(file); } };
   const handleGlobalAvatarUpload = (e: React.ChangeEvent<HTMLInputElement>) => { const file = e.target.files?.[0]; if (file) { const reader = new FileReader(); reader.onloadend = () => { if (reader.result) setTempGlobalPersona(prev => ({ ...prev, avatar: reader.result as string })); }; reader.readAsDataURL(file); } };
-  const saveGlobalPersona = () => { onUpdateSettings({ ...settings, globalPersona: tempGlobalPersona }); setIsSavingPersona(true); setTimeout(() => setIsSavingPersona(false), 1500); };
+  const saveGlobalPersona = () => { onUpdateSettings(prev => ({ ...prev, globalPersona: tempGlobalPersona })); setIsSavingPersona(true); setTimeout(() => setIsSavingPersona(false), 1500); };
   
-  // FIX: Allow functional updates for characters state
   const updateActiveCharacter = (updatedOrFn: Character | ((prev: Character) => Character)) => {
     onUpdateCharacters((prevChars) => prevChars.map(c => {
         if (c.id === activeChatId) {
@@ -247,7 +246,7 @@ const WeChatApp: React.FC<WeChatAppProps> = ({ settings, onUpdateSettings, chara
       <div className="h-full relative">
         <ChatInterface 
             character={activeCharacter} settings={settings} onBack={() => setActiveChatId(null)} 
-            onUpdateCharacter={updateActiveCharacter} // Passes the functional-capable updater
+            onUpdateCharacter={updateActiveCharacter} 
             onAddMessage={handleAddMessage} isGlobalGenerating={globalIsGenerating} setGlobalGenerating={setGlobalIsGenerating}
             onShowNotification={handleShowNotification}
         />
@@ -256,7 +255,6 @@ const WeChatApp: React.FC<WeChatAppProps> = ({ settings, onUpdateSettings, chara
     );
   }
 
-  // ... (Rest of renderContent same as before) ...
   const renderContent = () => {
     if (isCreating) {
       return (
@@ -279,7 +277,7 @@ const WeChatApp: React.FC<WeChatAppProps> = ({ settings, onUpdateSettings, chara
       return (
         <div className="divide-y divide-gray-200">
           {sortedChars.map(char => {
-             const lastMsg = [...char.messages].filter(m => m.mode !== 'theater' && m.mode !== 'offline' && !m.isHidden).pop();
+             const lastMsg = [...char.messages].filter(m => (!m.mode || m.mode === 'online') && m.mode !== 'offline' && m.mode !== 'theater' && !m.isHidden).pop();
              return (
                <div key={char.id} onClick={() => setActiveChatId(char.id)} onContextMenu={(e) => { e.preventDefault(); setContextMenuCharId(char.id); }} onMouseDown={() => handleTouchStart(char.id)} onMouseUp={handleTouchEnd} onMouseLeave={handleTouchEnd} onTouchStart={() => handleTouchStart(char.id)} onTouchEnd={handleTouchEnd} className={`flex items-center p-3 active:bg-gray-100 cursor-pointer select-none ${char.isPinned ? 'bg-gray-50' : 'bg-white'}`}>
                  <div className="relative pointer-events-none"><img src={char.avatar} className="w-12 h-12 rounded-lg object-cover mr-3 bg-gray-200" />{char.unread ? <div className="absolute -top-1 right-2 w-4 h-4 bg-red-500 rounded-full border-2 border-white"></div> : null}</div>
@@ -317,91 +315,32 @@ const WeChatApp: React.FC<WeChatAppProps> = ({ settings, onUpdateSettings, chara
                     </div>
                 </div>
                 <div className="pt-64 pb-20 px-4 space-y-8 overflow-y-auto h-full no-scrollbar">
-                    {/* Post Button */}
                     <div className="absolute top-4 right-4 z-20 flex gap-4">
                         <button onClick={handleRefreshMoments} className={`w-8 h-8 bg-black/20 backdrop-blur rounded-full text-white flex items-center justify-center hover:bg-black/40 ${isRefreshingMoments ? 'animate-spin' : ''}`}><i className="fas fa-sync-alt"></i></button>
                         <button onClick={() => setIsPostingMoment(true)} className="w-8 h-8 bg-black/20 backdrop-blur rounded-full text-white flex items-center justify-center hover:bg-black/40"><i className="fas fa-camera"></i></button>
                     </div>
-
                     {moments.length === 0 && <div className="text-center text-gray-400 mt-10">暂无朋友圈，快去发一条吧！</div>}
-
                     {moments.map(moment => (
                         <div key={moment.id} className="flex gap-3 pb-6 border-b border-gray-100 last:border-0 animate-fade-in">
                             <img src={moment.avatar} className="w-10 h-10 rounded bg-gray-200 object-cover mt-1" />
                             <div className="flex-1">
                                 <div className="font-bold text-blue-900 text-sm mb-1">{moment.name}</div>
                                 <div className="text-sm text-gray-800 leading-relaxed mb-2 whitespace-pre-wrap">{moment.content}</div>
-                                {moment.images && (
-                                    <div className="grid grid-cols-3 gap-1 mb-2 max-w-[200px]">
-                                        {moment.images.map((img, i) => <img key={i} src={img} className="w-full h-full aspect-square object-cover bg-gray-100" />)}
-                                    </div>
-                                )}
-                                <div className="flex justify-between items-center text-xs text-gray-400 mb-2">
-                                    <span>{new Date(moment.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
-                                    <button onClick={() => handleLikeMoment(moment)} className="bg-gray-100 px-2 py-1 rounded text-blue-900 hover:bg-gray-200">
-                                        <i className={`far fa-heart ${moment.likes.includes('USER') ? 'font-bold text-red-500' : ''}`}></i>
-                                    </button>
-                                </div>
-                                
-                                {/* Likes/Comments Area */}
+                                {moment.images && (<div className="grid grid-cols-3 gap-1 mb-2 max-w-[200px]">{moment.images.map((img, i) => <img key={i} src={img} className="w-full h-full aspect-square object-cover bg-gray-100" />)}</div>)}
+                                <div className="flex justify-between items-center text-xs text-gray-400 mb-2"><span>{new Date(moment.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span><button onClick={() => handleLikeMoment(moment)} className="bg-gray-100 px-2 py-1 rounded text-blue-900 hover:bg-gray-200"><i className={`far fa-heart ${moment.likes.includes('USER') ? 'font-bold text-red-500' : ''}`}></i></button></div>
                                 <div className="bg-gray-50 rounded p-2">
-                                    {moment.likes.length > 0 && (
-                                        <div className="text-xs text-blue-900 font-bold mb-1 border-b border-gray-200 pb-1">
-                                            <i className="far fa-heart mr-1"></i>
-                                            {moment.likes.includes('USER') ? '我' : ''}
-                                            {moment.likes.filter(l => l !== 'USER').length > 0 && (moment.likes.includes('USER') ? ', ' : '') + `${moment.likes.filter(l => l!=='USER').length} 人`}
-                                        </div>
-                                    )}
-                                    {moment.comments.map(c => (
-                                        <div key={c.id} className="text-xs mb-1">
-                                            <span className="text-blue-900 font-bold">{c.authorName}: </span>
-                                            <span className="text-gray-700">{c.content}</span>
-                                        </div>
-                                    ))}
+                                    {moment.likes.length > 0 && (<div className="text-xs text-blue-900 font-bold mb-1 border-b border-gray-200 pb-1"><i className="far fa-heart mr-1"></i>{moment.likes.includes('USER') ? '我' : ''}{moment.likes.filter(l => l !== 'USER').length > 0 && (moment.likes.includes('USER') ? ', ' : '') + `${moment.likes.filter(l => l!=='USER').length} 人`}</div>)}
+                                    {moment.comments.map(c => (<div key={c.id} className="text-xs mb-1"><span className="text-blue-900 font-bold">{c.authorName}: </span><span className="text-gray-700">{c.content}</span></div>))}
                                     <button onClick={() => handleCommentMoment(moment)} className="text-[10px] text-gray-400 mt-1 hover:text-blue-600">评论...</button>
                                 </div>
                             </div>
                         </div>
                     ))}
                 </div>
-
-                {/* Post Modal */}
                 {isPostingMoment && (
                     <div className="absolute inset-0 bg-white z-50 animate-slide-up flex flex-col">
-                        <div className="p-4 flex justify-between items-center border-b">
-                            <button onClick={() => setIsPostingMoment(false)} className="text-gray-600">取消</button>
-                            <button onClick={handlePostMoment} className={`px-4 py-1 rounded bg-[#07c160] text-white font-bold ${!newMomentContent ? 'opacity-50' : ''}`}>发表</button>
-                        </div>
-                        <div className="p-4 flex-1">
-                            <textarea 
-                                value={newMomentContent}
-                                onChange={e => setNewMomentContent(e.target.value)}
-                                className="w-full h-40 resize-none outline-none text-base"
-                                placeholder="这一刻的想法..."
-                            />
-                            <div className="border-t py-3 flex items-center justify-between" onClick={() => setShowVisibilitySelector(!showVisibilitySelector)}>
-                                <div className="flex items-center gap-2 text-gray-700">
-                                    <i className="fas fa-user-friends"></i> 谁可以看
-                                </div>
-                                <div className="flex items-center gap-1 text-gray-400 text-sm">
-                                    {momentVisibility.length === 0 ? '公开' : `部分可见(${momentVisibility.length})`} <i className="fas fa-chevron-right"></i>
-                                </div>
-                            </div>
-                            {showVisibilitySelector && (
-                                <div className="bg-gray-50 p-2 rounded max-h-40 overflow-y-auto">
-                                    {characters.map(c => (
-                                        <div key={c.id} className="flex items-center gap-2 p-2 border-b last:border-0" onClick={() => {
-                                            if (momentVisibility.includes(c.id)) setMomentVisibility(momentVisibility.filter(id => id !== c.id));
-                                            else setMomentVisibility([...momentVisibility, c.id]);
-                                        }}>
-                                            <input type="checkbox" checked={momentVisibility.includes(c.id)} onChange={()=>{}} className="pointer-events-none"/>
-                                            <img src={c.avatar} className="w-6 h-6 rounded" />
-                                            <span className="text-sm">{c.remark}</span>
-                                        </div>
-                                    ))}
-                                </div>
-                            )}
-                        </div>
+                        <div className="p-4 flex justify-between items-center border-b"><button onClick={() => setIsPostingMoment(false)} className="text-gray-600">取消</button><button onClick={handlePostMoment} className={`px-4 py-1 rounded bg-[#07c160] text-white font-bold ${!newMomentContent ? 'opacity-50' : ''}`}>发表</button></div>
+                        <div className="p-4 flex-1"><textarea value={newMomentContent} onChange={e => setNewMomentContent(e.target.value)} className="w-full h-40 resize-none outline-none text-base" placeholder="这一刻的想法..."/><div className="border-t py-3 flex items-center justify-between" onClick={() => setShowVisibilitySelector(!showVisibilitySelector)}><div className="flex items-center gap-2 text-gray-700"><i className="fas fa-user-friends"></i> 谁可以看</div><div className="flex items-center gap-1 text-gray-400 text-sm">{momentVisibility.length === 0 ? '公开' : `部分可见(${momentVisibility.length})`} <i className="fas fa-chevron-right"></i></div></div>{showVisibilitySelector && (<div className="bg-gray-50 p-2 rounded max-h-40 overflow-y-auto">{characters.map(c => (<div key={c.id} className="flex items-center gap-2 p-2 border-b last:border-0" onClick={() => { if (momentVisibility.includes(c.id)) setMomentVisibility(momentVisibility.filter(id => id !== c.id)); else setMomentVisibility([...momentVisibility, c.id]); }}><input type="checkbox" checked={momentVisibility.includes(c.id)} onChange={()=>{}} className="pointer-events-none"/><img src={c.avatar} className="w-6 h-6 rounded" /><span className="text-sm">{c.remark}</span></div>))}</div>)}</div>
                     </div>
                 )}
             </div>

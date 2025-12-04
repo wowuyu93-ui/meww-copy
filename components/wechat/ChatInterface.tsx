@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
+
+import React, { useState, useEffect, useRef, Dispatch, SetStateAction } from 'react';
 import { Character, Message, AppSettings, Moment, Scenario, MemoryCard, StyleConfig } from '../../types';
 import { generateChatCompletion, interpolatePrompt } from '../../services/aiService';
 import { ARCHIVIST_PROMPT, FUSE_PROMPT, DEFAULT_OS_PROMPT, OFFLINE_LOADING_COLORS, DEFAULT_OFFLINE_PROMPT, PRESET_STYLES, DEFAULT_STYLE_CONFIG } from '../../constants';
@@ -7,7 +8,7 @@ interface ChatInterfaceProps {
   character: Character;
   settings: AppSettings;
   onBack: () => void;
-  onUpdateCharacter: (c: Character | ((prev: Character) => Character)) => void;
+  onUpdateCharacter: (charOrFn: Character | ((prev: Character) => Character)) => void;
   onAddMessage: (charId: string, message: Message) => void;
   isGlobalGenerating: boolean;
   setGlobalGenerating: (isGenerating: boolean) => void;
@@ -405,7 +406,6 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
   );
 
   // --- AUTO SUMMARIZE TRIGGER EFFECT ---
-  // Moved to bottom to avoid ReferenceError
   useEffect(() => {
       if (character.furnaceConfig?.autoEnabled && !isGlobalGenerating) {
           const msgs = character.messages;
@@ -446,9 +446,12 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
       </div>
   );
 
+  // Simplified filter logic to satisfy TS
+  const onlineMessages = character.messages.filter(m => !m.isHidden && (!m.mode || m.mode === 'online'));
+
   const renderChatList = (messages: Message[]) => (
     <div className="flex-1 overflow-y-auto p-4 space-y-4 no-scrollbar">
-        {messages.filter(m => !m.isHidden).map((msg, idx) => (
+        {messages.map((msg, idx) => (
             <div key={msg.id} {...bindLongPress(msg.id)} className={`flex w-full ${msg.role === 'user' ? 'justify-end' : 'justify-start'} animate-fade-in`}>
                 {msg.role === 'model' && ( <img src={character.avatar} alt="avatar" onDoubleClick={handlePat} className="w-9 h-9 rounded bg-gray-300 mr-2 mt-0 object-cover cursor-pointer hover:opacity-90 active:scale-95 transition" /> )}
                 {msg.role === 'system' && ( <div className="w-full flex justify-center my-2"><span className="bg-gray-200/50 text-gray-500 text-xs px-2 py-1 rounded">{msg.content}</span></div> )}
@@ -479,11 +482,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
     </div>
   );
 
-  // --------------------------------------------------------------------------------
-  // MAIN RENDER SWITCHER (ISOLATED VIEWS)
-  // --------------------------------------------------------------------------------
-
-  // --- 1. THEATER LIST VIEW (FULL PAGE) ---
+  // --- 1. THEATER LIST VIEW ---
   if (viewMode === 'theater_list') {
       return (
           <div className="flex flex-col h-full bg-stone-900 text-white relative animate-fade-in font-serif">
@@ -511,7 +510,6 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
                   ))}
                   {(character.scenarios || []).length === 0 && <div className="text-center text-stone-600 mt-10">暂无剧场，点击右上角创建。</div>}
               </div>
-              {/* Scenario Create Modal */}
               {isCreatingScenario && (
                   <div className="absolute inset-0 bg-black/80 z-50 flex items-center justify-center p-6"><div className="bg-stone-800 w-full max-w-sm rounded-xl p-6 shadow-2xl border border-stone-600"><h3 className="text-amber-500 font-bold text-lg mb-4">创建新剧场</h3><input className="w-full bg-stone-900 border border-stone-700 p-2 rounded text-white mb-3 focus:border-amber-500 focus:outline-none" placeholder="剧场标题 (e.g. 穿越古代)" value={newScenario.title || ''} onChange={e => setNewScenario({...newScenario, title: e.target.value})}/><input className="w-full bg-stone-900 border border-stone-700 p-2 rounded text-white mb-3 text-sm focus:border-amber-500 focus:outline-none" placeholder="简介" value={newScenario.description || ''} onChange={e => setNewScenario({...newScenario, description: e.target.value})}/><textarea className="w-full bg-stone-900 border border-stone-700 p-2 rounded text-white mb-3 text-xs h-24 focus:border-amber-500 focus:outline-none" placeholder="剧场世界观/System Prompt..." value={newScenario.systemPrompt || ''} onChange={e => setNewScenario({...newScenario, systemPrompt: e.target.value})}/><div className="flex items-center justify-between mb-6 bg-stone-900 p-2 rounded border border-stone-700"><div><div className="text-sm font-bold text-stone-300">关联主线记忆</div><div className="text-[10px] text-stone-500">开启后AI记得主线发生的事</div></div><input type="checkbox" className="accent-amber-600 w-5 h-5" checked={newScenario.isConnected ?? true} onChange={e => setNewScenario({...newScenario, isConnected: e.target.checked})}/></div><div className="flex gap-3"><button onClick={() => setIsCreatingScenario(false)} className="flex-1 py-2 bg-stone-700 rounded text-stone-300">取消</button><button onClick={handleCreateScenario} className="flex-1 py-2 bg-amber-700 rounded text-white font-bold">创建</button></div></div></div>
               )}
@@ -519,7 +517,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
       );
   }
 
-  // --- 2. THEATER ROOM VIEW (FULL PAGE) ---
+  // --- 2. THEATER ROOM VIEW ---
   if (viewMode === 'theater_room' && activeScenario) {
       const messagesToShow = activeScenario.isConnected ? character.messages.filter(m => m.scenarioId === activeScenario.id) : (activeScenario.messages || []);
       return (
@@ -541,7 +539,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
       );
   }
 
-  // --- 3. OFFLINE VIEW (FULL PAGE) ---
+  // --- 3. OFFLINE VIEW ---
   if (viewMode === 'offline') {
       const bgStyle = character.offlineConfig.bgUrl ? { backgroundImage: `url(${character.offlineConfig.bgUrl})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundRepeat: 'no-repeat' } : { backgroundColor: '#1c1917' };
       const offlineMessages = character.messages.filter(m => m.mode === 'offline');
@@ -569,9 +567,6 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
   }
 
   // --- 4. STANDARD CHAT VIEW ---
-  // Online messages only
-  const onlineMessages = character.messages.filter(m => (!m.mode || m.mode === 'online') && m.mode !== 'offline' && m.mode !== 'theater');
-
   return (
     <div className="flex flex-col h-full relative text-black" style={{ backgroundImage: character.chatBackground ? `url(${character.chatBackground})` : undefined, backgroundColor: character.chatBackground ? undefined : '#ededed', backgroundSize: 'cover', backgroundPosition: 'center' }}>
       <div className="bg-[#ededed]/95 backdrop-blur border-b border-gray-300 p-3 flex items-center justify-between sticky top-0 z-20 h-[60px]">
