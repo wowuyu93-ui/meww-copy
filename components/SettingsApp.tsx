@@ -89,6 +89,10 @@ const SettingsApp: React.FC<SettingsProps> = ({ settings, updateSettings, charac
       reader.readAsDataURL(file);
     }
   };
+  
+  const handleResetWallpaper = () => {
+      setLocalSettings({ ...localSettings, wallpaper: '' }); // Empty string implies default
+  };
 
   const handleFontUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -257,7 +261,7 @@ const SettingsApp: React.FC<SettingsProps> = ({ settings, updateSettings, charac
         <div className="bg-blue-50 p-4 rounded-xl border border-blue-100">
              <h2 className="font-bold text-blue-800 mb-2 flex items-center gap-2"><i className="fas fa-info-circle"></i> 关于小手机</h2>
              <p className="text-xs text-blue-600 leading-relaxed font-bold">⚠️ 请务必经常使用下方的【导出备份】功能！</p>
-             <p className="text-[10px] text-blue-400 mt-2">Version 2.4.0 (Redesigned Home & Import Fix)</p>
+             <p className="text-[10px] text-blue-400 mt-2">Version 2.5.0 (Global Shell & Wallpaper)</p>
         </div>
 
         <div className="bg-white p-4 rounded-xl shadow-sm flex items-center justify-between">
@@ -333,7 +337,13 @@ const SettingsApp: React.FC<SettingsProps> = ({ settings, updateSettings, charac
         <div className="bg-white p-4 rounded-xl shadow-sm">
           <h2 className="font-bold mb-4 text-gray-700 border-l-4 border-purple-500 pl-2">个性化</h2>
           <div className="space-y-4">
-            <div><label className="block text-xs text-gray-500 uppercase font-bold mb-2">主屏幕壁纸</label><input type="file" accept="image/*" onChange={handleWallpaperUpload} className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-purple-50 file:text-purple-700 hover:file:bg-purple-100" /></div>
+            <div>
+                <label className="block text-xs text-gray-500 uppercase font-bold mb-2">主屏幕壁纸</label>
+                <div className="flex gap-2">
+                    <input type="file" accept="image/*" onChange={handleWallpaperUpload} className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-purple-50 file:text-purple-700 hover:file:bg-purple-100" />
+                    <button onClick={handleResetWallpaper} className="px-3 py-1 bg-gray-100 text-gray-500 text-xs rounded-full hover:bg-gray-200 whitespace-nowrap">恢复默认</button>
+                </div>
+            </div>
             <div><label className="block text-xs text-gray-500 uppercase font-bold mb-2">全局字体</label><input type="file" accept="*" onChange={handleFontUpload} className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-purple-50 file:text-purple-700 hover:file:bg-purple-100" /></div>
             
             {/* Immersive Font Size Setting */}
