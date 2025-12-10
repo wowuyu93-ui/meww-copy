@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { AppSettings, Character, BackupData, FurnaceConfig, OfflineConfig } from '../types';
+import { AppSettings, Character, BackupData, FurnaceConfig, OfflineConfig, HomeConfig } from '../types';
 import { fetchModels } from '../services/aiService';
 import { DEFAULT_SYSTEM_PROMPT, DEFAULT_OS_PROMPT, DEFAULT_OFFLINE_PROMPT } from '../constants';
 
@@ -27,9 +27,25 @@ const DEFAULT_OFFLINE_CONFIG: OfflineConfig = {
     indicatorColor: '#f59e0b'
 };
 
+const DEFAULT_HOME_CONFIG: HomeConfig = {
+    banner: 'https://picsum.photos/id/16/600/300?grayscale',
+    albumImages: [
+        'https://picsum.photos/id/10/200/200?grayscale',
+        'https://picsum.photos/id/11/200/200?grayscale',
+        'https://picsum.photos/id/12/200/200?grayscale'
+    ],
+    statusText: '我不會再讓你一個人了',
+    signature: '@如果天黑前来得及，我要忘了你的眼睛',
+    polaroid: {
+        image: 'https://picsum.photos/id/30/300/300?grayscale',
+        text: 'First Choice'
+    }
+};
+
 const SettingsApp: React.FC<SettingsProps> = ({ settings, updateSettings, characters, onUpdateCharacters, onClose }) => {
   const [localSettings, setLocalSettings] = useState<AppSettings>(settings);
   const [loadingModels, setLoadingModels] = useState(false);
+  const [modelFetchMsg, setModelFetchMsg] = useState('');
   const [isSaved, setIsSaved] = useState(false);
   
   const [importMsg, setImportMsg] = useState('');
@@ -40,11 +56,21 @@ const SettingsApp: React.FC<SettingsProps> = ({ settings, updateSettings, charac
   }, [settings]);
 
   const handleFetchModels = async () => {
-    if (!localSettings.apiKey) { alert("请先填写 API Key"); return; }
     setLoadingModels(true);
-    const models = await fetchModels(localSettings);
-    setLocalSettings({ ...localSettings, availableModels: models });
+    setModelFetchMsg('');
+    try {
+        const models = await fetchModels(localSettings);
+        if (models.length > 0) {
+            setLocalSettings({ ...localSettings, availableModels: models });
+            setModelFetchMsg(`✅ 成功获取 ${models.length} 个模型`);
+        } else {
+            setModelFetchMsg('⚠️ 未能获取模型，已使用默认列表');
+        }
+    } catch (e) {
+        setModelFetchMsg('❌ 获取失败，请检查 URL 和 Key');
+    }
     setLoadingModels(false);
+    setTimeout(() => setModelFetchMsg(''), 3000);
   };
 
   const handleSave = () => {
@@ -88,9 +114,7 @@ const SettingsApp: React.FC<SettingsProps> = ({ settings, updateSettings, charac
             settings: settings,
             characters: characters.map(c => ({
                 ...c,
-                // Ensure messages are sliced but keep existing structure
                 messages: Array.isArray(c.messages) ? c.messages.slice(-50) : [],
-                // Deep copy nested structures to avoid reference issues or missing keys
                 scenarios: Array.isArray(c.scenarios) ? c.scenarios.map(s => ({
                     ...s,
                     messages: s.messages ? s.messages.slice(-50) : []
@@ -101,7 +125,6 @@ const SettingsApp: React.FC<SettingsProps> = ({ settings, updateSettings, charac
                 styleConfig: c.styleConfig || undefined,
                 furnaceConfig: c.furnaceConfig || DEFAULT_FURNACE_CONFIG,
                 offlineConfig: c.offlineConfig || DEFAULT_OFFLINE_CONFIG,
-                // Ensure all boolean flags are preserved
                 showOS: c.showOS ?? false,
                 realTimeMode: c.realTimeMode ?? false,
                 useLocalPersona: c.useLocalPersona ?? false,
@@ -144,11 +167,26 @@ const SettingsApp: React.FC<SettingsProps> = ({ settings, updateSettings, charac
               const data = JSON.parse(json);
               if (!data.settings && !data.characters) throw new Error("无效备份数据");
 
+              // Deep merge logic to ensure new fields (like homeConfig) are present even if missing in backup
+              const mergedSettings: AppSettings = {
+                  ...settings, // Start with current defaults
+                  ...data.settings, // Overwrite with backup
+                  // Ensure objects are merged, not just replaced if missing keys
+                  homeConfig: {
+                      ...DEFAULT_HOME_CONFIG,
+                      ...(data.settings.homeConfig || {})
+                  },
+                  globalPersona: {
+                      ...settings.globalPersona,
+                      ...(data.settings.globalPersona || {})
+                  }
+              };
+
               const validBackup: BackupData = {
                   version: data.version || 1,
                   type: 'small_phone_backup',
                   timestamp: data.timestamp || Date.now(),
-                  settings: data.settings || settings,
+                  settings: mergedSettings,
                   characters: Array.isArray(data.characters) ? data.characters : []
               };
               setPendingImport(validBackup);
@@ -219,7 +257,7 @@ const SettingsApp: React.FC<SettingsProps> = ({ settings, updateSettings, charac
         <div className="bg-blue-50 p-4 rounded-xl border border-blue-100">
              <h2 className="font-bold text-blue-800 mb-2 flex items-center gap-2"><i className="fas fa-info-circle"></i> 关于小手机</h2>
              <p className="text-xs text-blue-600 leading-relaxed font-bold">⚠️ 请务必经常使用下方的【导出备份】功能！</p>
-             <p className="text-[10px] text-blue-400 mt-2">Version 2.2 (Moments Update)</p>
+             <p className="text-[10px] text-blue-400 mt-2">Version 2.4.0 (Redesigned Home & Import Fix)</p>
         </div>
 
         <div className="bg-white p-4 rounded-xl shadow-sm flex items-center justify-between">
@@ -243,16 +281,48 @@ const SettingsApp: React.FC<SettingsProps> = ({ settings, updateSettings, charac
         </div>
 
         <div className="bg-white p-4 rounded-xl shadow-sm">
-          <h2 className="font-bold mb-4 text-gray-700 border-l-4 border-blue-500 pl-2">大模型连接</h2>
+          <h2 className="font-bold mb-4 text-gray-700 border-l-4 border-blue-500 pl-2">大模型连接 (Custom)</h2>
           <div className="space-y-4">
-            <div><label className="block text-xs text-gray-500 uppercase font-bold">API 地址</label><input type="text" value={localSettings.apiUrl} onChange={(e) => setLocalSettings({...localSettings, apiUrl: e.target.value})} className="w-full border-b border-gray-300 py-2 focus:outline-none focus:border-blue-500 transition" /></div>
-            <div><label className="block text-xs text-gray-500 uppercase font-bold">API Key</label><input type="password" value={localSettings.apiKey} onChange={(e) => setLocalSettings({...localSettings, apiKey: e.target.value})} className="w-full border-b border-gray-300 py-2 focus:outline-none focus:border-blue-500 transition" /></div>
             <div>
-              <div className="flex justify-between items-center mb-1"><label className="block text-xs text-gray-500 uppercase font-bold">模型选择</label><button onClick={handleFetchModels} disabled={loadingModels} className="text-xs text-blue-500">{loadingModels ? '获取中...' : '刷新列表'}</button></div>
+                <label className="block text-xs text-gray-500 uppercase font-bold mb-1">API Key</label>
+                <div className="relative">
+                    <input 
+                        type="password" 
+                        value={localSettings.apiKey} 
+                        onChange={(e) => setLocalSettings({...localSettings, apiKey: e.target.value})} 
+                        className="w-full border-b border-gray-300 py-2 bg-transparent appearance-none focus:outline-none focus:border-blue-500 font-mono text-sm"
+                        placeholder="在此粘贴 API Key..." 
+                    />
+                    <i className="fas fa-key absolute right-2 top-3 text-gray-300 pointer-events-none"></i>
+                </div>
+            </div>
+            
+            <div>
+                <label className="block text-xs text-gray-500 uppercase font-bold mb-1">API Base URL</label>
+                <div className="relative">
+                    <input 
+                        type="text" 
+                        value={localSettings.apiUrl} 
+                        onChange={(e) => setLocalSettings({...localSettings, apiUrl: e.target.value})} 
+                        className="w-full border-b border-gray-300 py-2 bg-transparent appearance-none focus:outline-none focus:border-blue-500 font-mono text-sm"
+                        placeholder="https://generativelanguage.googleapis.com" 
+                    />
+                    <i className="fas fa-globe absolute right-2 top-3 text-gray-300 pointer-events-none"></i>
+                </div>
+                <p className="text-[10px] text-gray-400 mt-1">留空则使用默认 Google 地址。如需中转/代理请填写完整 Base URL。</p>
+            </div>
+
+            <div>
+              <div className="flex justify-between items-center mb-1">
+                  <label className="block text-xs text-gray-500 uppercase font-bold">模型选择</label>
+                  <button onClick={handleFetchModels} disabled={loadingModels} className="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded border border-blue-100 active:bg-blue-100 transition">
+                      {loadingModels ? '连接中...' : '☁️ 拉取模型列表'}
+                  </button>
+              </div>
+              {modelFetchMsg && <div className="text-[10px] text-center mb-1 text-orange-600 font-bold">{modelFetchMsg}</div>}
               <div className="relative">
                 <select value={localSettings.model} onChange={(e) => setLocalSettings({...localSettings, model: e.target.value})} className="w-full border-b border-gray-300 py-2 bg-transparent appearance-none focus:outline-none focus:border-blue-500">
                     {localSettings.availableModels.map(m => <option key={m} value={m}>{m}</option>)}
-                    <option value="gpt-4o">gpt-4o</option><option value="gpt-3.5-turbo">gpt-3.5-turbo</option><option value="gemini-2.0-flash">gemini-2.0-flash</option>
                 </select>
                 <i className="fas fa-chevron-down absolute right-2 top-3 text-gray-400 pointer-events-none"></i>
               </div>

@@ -1,4 +1,5 @@
 
+
 export interface Message {
   id: string;
   role: 'user' | 'model' | 'system';
@@ -11,6 +12,9 @@ export interface Message {
   originalContent?: string;
   quote?: { id: string; content: string; name: string; };
   isHidden?: boolean;
+  // New fields for rich media types
+  msgType?: 'text' | 'voice' | 'image' | 'transfer' | 'location' | 'video_call' | 'gossip' | 'nudge';
+  meta?: any; // Stores duration, amount, url, etc.
 }
 
 export interface MemoryCard {
@@ -144,11 +148,25 @@ export interface Character {
   autoPostMoments: boolean; 
   isPinned?: boolean;
   unread?: number;
+  renderMessageLimit?: number; // New field for lazy loading
 }
 
 export interface Widget {
   id: string;
   image: string;
+}
+
+export interface PolaroidConfig {
+    image: string;
+    text: string;
+}
+
+export interface HomeConfig {
+    banner: string;
+    albumImages: string[]; // Expect 3 images
+    statusText: string;
+    signature: string;
+    polaroid: PolaroidConfig;
 }
 
 export interface AppSettings {
@@ -160,6 +178,7 @@ export interface AppSettings {
   customFont?: string;
   immersiveFontSize?: number;
   widgets?: Widget[];
+  homeConfig?: HomeConfig;
   availableModels: string[];
   globalPersona: GlobalPersona;
 }

@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useRef, Dispatch, SetStateAction } from 'react';
+import React, { useState, useEffect, useRef, Dispatch, SetStateAction, useMemo } from 'react';
 import { Character, Message, AppSettings, Moment, Scenario, MemoryCard, StyleConfig } from '../../types';
 import { generateChatCompletion, interpolatePrompt } from '../../services/aiService';
 import { ARCHIVIST_PROMPT, FUSE_PROMPT, DEFAULT_OS_PROMPT, OFFLINE_LOADING_COLORS, DEFAULT_OFFLINE_PROMPT, PRESET_STYLES, DEFAULT_STYLE_CONFIG } from '../../constants';
@@ -13,9 +13,64 @@ interface ChatInterfaceProps {
   isGlobalGenerating: boolean;
   setGlobalGenerating: (isGenerating: boolean) => void;
   onShowNotification?: (text: string) => void; 
+  onPostMoment?: (content: string, images?: string[]) => void;
 }
 
 type ViewMode = 'chat' | 'offline' | 'theater_list' | 'theater_room';
+
+// --- HELPER: Extract INNER content from a string ---
+const extractInnerContent = (text: string): { inner: string | undefined, clean: string } => {
+    if (!text) return { inner: undefined, clean: '' };
+    
+    // Match [INNER: ...]
+    const bracketMatch = text.match(/\[INNER:([\s\S]*?)\]/i);
+    if (bracketMatch) {
+        const innerContent = bracketMatch[1].trim();
+        return {
+            inner: innerContent.length > 0 ? innerContent : undefined,
+            clean: text.replace(bracketMatch[0], '').trim()
+        };
+    }
+    
+    // Match <os> ... </os> (Legacy support)
+    const tagMatch = text.match(/<os>([\s\S]*?)<\/os>/i);
+    if (tagMatch) {
+        const innerContent = tagMatch[1].trim();
+        return {
+            inner: innerContent.length > 0 ? innerContent : undefined,
+            clean: text.replace(tagMatch[0], '').trim()
+        };
+    }
+
+    return { inner: undefined, clean: text };
+};
+
+// --- HELPER: Clean Markdown Code Blocks ---
+const cleanMarkdown = (text: string): string => {
+    let clean = text.trim();
+    if (clean.startsWith('```')) {
+        clean = clean.replace(/^```[a-z]*\s*/i, '').replace(/```$/, '');
+    }
+    return clean.trim();
+};
+
+// --- HELPER: Format Legacy JSON Messages ---
+const formatLegacyMessage = (content: string): string => {
+    const trimmed = content.trim();
+    // Check if it looks like a JSON array ["msg1", "msg2"]
+    if (trimmed.startsWith('[') && trimmed.endsWith(']') && !trimmed.includes('INNER:')) {
+        try {
+            const parsed = JSON.parse(trimmed);
+            if (Array.isArray(parsed)) {
+                // Filter out non-string items just in case, or stringify them
+                return parsed.map(item => typeof item === 'string' ? item : '').filter(Boolean).join('\n');
+            }
+        } catch (e) {
+            // Not valid JSON, return original
+        }
+    }
+    return content;
+};
 
 const LoadingBubbles = ({ color }: { color?: string }) => (
   <div className="flex space-x-1 items-center bg-stone-800/80 px-4 py-2 rounded-full w-fit animate-fade-in border border-stone-600">
@@ -56,7 +111,7 @@ const useLongPress = (callback: (e: any) => void, ms = 500) => {
   return { onMouseDown: start, onMouseUp: stop, onMouseLeave: stop, onTouchStart: start, onTouchEnd: stop };
 };
 
-const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBack, onUpdateCharacter, onAddMessage, isGlobalGenerating, setGlobalGenerating, onShowNotification }) => {
+const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBack, onUpdateCharacter, onAddMessage, isGlobalGenerating, setGlobalGenerating, onShowNotification, onPostMoment }) => {
   const [inputValue, setInputValue] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [showDrawer, setShowDrawer] = useState(false);
@@ -75,13 +130,39 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
   const [editingMsgId, setEditingMsgId] = useState<string | null>(null);
   const [editContent, setEditContent] = useState('');
   const [quotingMsg, setQuotingMsg] = useState<Message | null>(null);
+  
+  // Lazy Loading State
+  const [visibleLimit, setVisibleLimit] = useState(character.renderMessageLimit || 50);
+
+  // New state for Inner Monologue Modal
+  const [activeInnerContent, setActiveInnerContent] = useState<string | null>(null);
+  const [innerDarkMode, setInnerDarkMode] = useState(false);
+
+  // New state for Photo Description Modal
+  const [photoDescription, setPhotoDescription] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const activeScenario = character.scenarios?.find(s => s.id === activeScenarioId);
 
-  const scrollToBottom = () => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); };
-  useEffect(() => { scrollToBottom(); }, [character.messages, isTyping, viewMode, quotingMsg, activeScenario]);
+  // Force update visibleLimit when settings change
+  useEffect(() => {
+    if (character.renderMessageLimit) {
+        setVisibleLimit(character.renderMessageLimit);
+    }
+  }, [character.renderMessageLimit]);
+
+  const scrollToBottom = () => { 
+      // Add timeout to ensure DOM is ready, especially for offline/theater modes
+      setTimeout(() => {
+          messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); 
+      }, 150);
+  };
+  
+  // Only scroll to bottom on new messages, typing status change, or view mode change.
+  // We do NOT include visibleLimit here to prevent jumping when loading history.
+  useEffect(() => { scrollToBottom(); }, [character.messages.length, isTyping, viewMode, activeScenarioId]);
+  
   useEffect(() => { setTempCharConfig(character); }, [character]);
 
   const currentUserAvatar = character.useLocalPersona ? (character.userMaskAvatar || 'https://ui-avatars.com/api/?name=U') : settings.globalPersona.avatar;
@@ -141,7 +222,6 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
     const contentToSend = customContent || inputValue.trim();
     if (!contentToSend && !getReply) return; 
     
-    // Create optimistic character state for AI context
     let updatedCharForAI = { ...character }; 
 
     if (contentToSend) {
@@ -212,6 +292,121 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
       handleSend(true, `[骰子] 掷出了 ${val} 点`);
   };
 
+  // --- NEW PARSER FOR TAGS v2 (Split Text Bubbles) ---
+  const parseAIResponseTags = (text: string, currentChar: Character): { messages: Message[], retracts: { id: string, delay: number }[] } => {
+      const messages: Message[] = [];
+      const retracts: { id: string, delay: number }[] = [];
+      let accumulatedOS = '';
+
+      let cleanText = cleanMarkdown(text);
+      
+      // 1. Extract and Remove INNER tags first
+      const innerRegex = /\[INNER:([\s\S]*?)\]/gi;
+      let match;
+      while ((match = innerRegex.exec(cleanText)) !== null) {
+          accumulatedOS += (accumulatedOS ? '\n' : '') + match[1].trim();
+      }
+      cleanText = cleanText.replace(innerRegex, '');
+
+      // 2. Split by Media Tags
+      // We look for [TAG: ...]
+      const tagRegex = /(\[(?:IMAGE|VOICE|TRANSFER|LOCATION|GOSSIP|RETRACT|VIDEO|PATS_YOU):[^\]]*\]|\[PATS_YOU\])/g;
+      const parts = cleanText.split(tagRegex);
+      
+      parts.forEach((part, index) => {
+          if (!part.trim()) return;
+
+          const baseTimestamp = Date.now() + index * 100;
+
+          if (part.startsWith('[') && part.endsWith(']')) {
+              // --- HANDLE TAGS ---
+              const msgBase: Message = {
+                  id: baseTimestamp.toString(),
+                  role: 'model',
+                  content: '',
+                  timestamp: baseTimestamp,
+                  mode: 'online',
+                  scenarioId: activeScenarioId || undefined,
+                  msgType: 'text'
+              };
+
+              const tagContent = part.substring(1, part.length - 1); // remove [ ]
+              const colonIndex = tagContent.indexOf(':');
+              const type = colonIndex > -1 ? tagContent.substring(0, colonIndex).trim() : tagContent.trim();
+              const val = colonIndex > -1 ? tagContent.substring(colonIndex + 1).trim() : '';
+              const [p1, p2] = val.split('|').map(s => s.trim());
+
+              switch (type) {
+                  case 'IMAGE':
+                      msgBase.msgType = 'image';
+                      msgBase.content = p1 || '照片';
+                      break;
+                  case 'VOICE':
+                      msgBase.msgType = 'voice';
+                      msgBase.content = p1 || '[语音]';
+                      msgBase.meta = { textContent: p1, duration: parseInt(p2) || 3 };
+                      break;
+                  case 'TRANSFER':
+                      msgBase.msgType = 'transfer';
+                      msgBase.meta = { amount: parseFloat(p1) || 0 };
+                      msgBase.content = p2 || '转账给您';
+                      break;
+                  case 'LOCATION':
+                      msgBase.msgType = 'location';
+                      msgBase.content = p1 || '未知地点';
+                      break;
+                  case 'GOSSIP':
+                      msgBase.msgType = 'gossip';
+                      msgBase.meta = { title: p1, content: p2 };
+                      msgBase.content = p1 || '八卦新闻';
+                      break;
+                  case 'RETRACT':
+                      msgBase.content = p1 || '...';
+                      msgBase.isRecalled = false;
+                      retracts.push({ id: msgBase.id, delay: parseInt(p2) || 2000 });
+                      break;
+                  case 'VIDEO':
+                      msgBase.msgType = 'video_call';
+                      msgBase.content = p1 || '视频通话邀请';
+                      break;
+                  case 'PATS_YOU':
+                      msgBase.role = 'system';
+                      msgBase.content = `${currentChar.remark} 拍了拍我`;
+                      msgBase.msgType = 'nudge';
+                      break;
+                  default:
+                      msgBase.content = part; // Fallback
+                      break;
+              }
+              messages.push(msgBase);
+
+          } else {
+              // --- HANDLE TEXT (SPLIT BY NEWLINES) ---
+              // This is the fix for "multiple bubbles"
+              const lines = part.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+              
+              lines.forEach((line, lineIdx) => {
+                  messages.push({
+                      id: baseTimestamp.toString() + '_' + lineIdx,
+                      role: 'model',
+                      content: line,
+                      timestamp: baseTimestamp + lineIdx * 10,
+                      mode: 'online',
+                      scenarioId: activeScenarioId || undefined,
+                      msgType: 'text'
+                  });
+              });
+          }
+      });
+
+      // Attach accumulated OS to the very first message
+      if (messages.length > 0 && accumulatedOS) {
+          messages[0].osContent = accumulatedOS;
+      }
+
+      return { messages, retracts };
+  };
+
   const fetchAIReply = async (currentChar: Character) => {
     const isOffline = viewMode === 'offline';
     const isTheater = viewMode === 'theater_room';
@@ -234,14 +429,25 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
         else fullSystemPrompt += `\n\n[注意：本剧场为独立平行宇宙]\n${scenarioContext}`;
     } else if (isOffline) {
         fullSystemPrompt = interpolatePrompt(currentChar.offlineConfig.systemPrompt, {
-            ai_name: currentChar.name, user_mask_name: currentUserName, style: currentChar.offlineConfig.style, word_count: currentChar.offlineConfig.wordCount.toString()
+            ai_name: currentChar.name, 
+            user_mask_name: currentUserName, 
+            user_mask_description: currentUserDesc || '无详细描述',
+            style: currentChar.offlineConfig.style, 
+            word_count: currentChar.offlineConfig.wordCount.toString()
         });
         fullSystemPrompt += `\n\n${memoryInjection}\n${mainContext}`;
     } else {
         let promptTemplate = currentChar.systemPrompt;
         if (currentChar.showOS && currentChar.osSystemPrompt) promptTemplate += `\n\n${currentChar.osSystemPrompt}`;
-        let basePrompt = interpolatePrompt(promptTemplate, { ai_name: currentChar.name, user_mask_name: currentUserName, personality: currentChar.personality });
-        fullSystemPrompt = `${basePrompt}${personaInjection}${timeInjection}\n\n${memoryInjection}\n${mainContext}`;
+        
+        let basePrompt = interpolatePrompt(promptTemplate, { 
+            ai_name: currentChar.name, 
+            user_mask_name: currentUserName, 
+            user_mask_description: currentUserDesc || '无详细描述',
+            personality: currentChar.personality 
+        });
+        
+        fullSystemPrompt = `${basePrompt}${timeInjection}\n\n${memoryInjection}\n${mainContext}`;
     }
 
     const historyCount = currentChar.historyCount || 20;
@@ -254,89 +460,106 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
     const processedHistory = history.filter(m => !m.isRecalled).map(m => {
         let finalContent = m.content;
         if (m.quote) finalContent = `> 引用回复 "${m.quote.name}": ${m.quote.content}\n\n${m.content}`;
+        if (m.isRecalled) finalContent = "[该消息已撤回]"; 
+        
         return {
             role: m.role,
-            content: m.role === 'model' ? (m.osContent ? `<os>${m.osContent}</os><reply>${finalContent.split('|||').join(' ')}</reply>` : finalContent) : finalContent
+            content: m.role === 'model' ? (m.osContent ? `[INNER:${m.osContent}] ${finalContent}` : finalContent) : finalContent
         };
     });
 
     let tailInjection = null;
-    if (isOffline) tailInjection = { role: 'system', content: `[System Instruction: You are in OFFLINE/REALITY mode. Maintain immersive description. Ignore WeChat format.]` };
-    else if (isTheater) tailInjection = { role: 'system', content: `[系统指令：当前处于剧场模式。请严格扮演设定角色。]` };
-    else tailInjection = { role: 'system', content: `[系统强制指令] 用户已回到手机微信界面。停止动作描写。必须使用 ||| 分隔消息。如果需要发朋友圈，请使用 {{MOMENT: ...}} 指令。` };
-
-    const apiMessages = [ { role: 'system', content: fullSystemPrompt }, ...processedHistory, ...(tailInjection ? [tailInjection] : []) ];
-    const rawResponse = await generateChatCompletion(apiMessages, settings);
-
-    const osMatch = rawResponse.match(/<os>([\s\S]*?)<\/os>/);
-    const osContent = osMatch ? osMatch[1].trim() : undefined;
-    let replyContent = rawResponse.replace(/<os>[\s\S]*?<\/os>/, '').replace(/<reply>/, '').replace(/<\/reply>/, '').trim();
+    if (isOffline) {
+        tailInjection = { role: 'system', content: `[SYSTEM FORCE: OFFLINE MODE ACTIVE]\nFORBIDDEN: JSON format.\nREQUIRED: Novel/Script format. One single coherent response block. Output plain text ONLY.` };
+    } else if (isTheater) {
+        tailInjection = { role: 'system', content: `[SYSTEM: THEATER MODE]\nRoleplay strictly. Output as one coherent block of text/script.` };
+    } else {
+        tailInjection = { role: 'system', content: `[SYSTEM FORCE: ONLINE/WECHAT MODE ACTIVE]\n[当前环境: 手机微信 App] 请使用短句。` };
+    }
     
-    if (replyContent.includes('{{RECALL}}')) {
-        replyContent = replyContent.replace('{{RECALL}}', '');
-        setTimeout(() => {
-            onUpdateCharacter(prev => {
-                const msgs = [...prev.messages];
-                const lastModelIdx = msgs.map(m=>m.role).lastIndexOf('model');
-                if (lastModelIdx >= 0) { msgs[lastModelIdx] = { ...msgs[lastModelIdx], isRecalled: true, originalContent: msgs[lastModelIdx].content, content: '对方撤回了一条消息' }; }
-                return { ...prev, messages: msgs };
-            });
-        }, 2000);
-    }
+    const apiMessages = [ { role: 'system', content: fullSystemPrompt }, ...processedHistory, ...(tailInjection ? [tailInjection] : []) ];
+    
+    try {
+        const rawResponse = await generateChatCompletion(apiMessages, settings);
+        
+        const messagesToAdd: Message[] = [];
+        const messagesToRetract: { id: string, delay: number }[] = [];
+        
+        let cleanResponse = cleanMarkdown(rawResponse);
+        
+        if (isOffline || isTheater) {
+            // --- OFFLINE/THEATER MODE: Single Block ---
+            const { inner, clean } = extractInnerContent(cleanResponse);
+            
+            // Do NOT split by ||| or newlines. Keep it as one big block for immersion.
+            if (clean.trim()) {
+                messagesToAdd.push({
+                    id: Date.now().toString(),
+                    role: 'model',
+                    content: clean.trim(),
+                    osContent: inner,
+                    timestamp: Date.now(),
+                    mode: isOffline ? 'offline' : 'theater',
+                    scenarioId: activeScenarioId || undefined
+                });
+            }
 
-    const momentMatch = replyContent.match(/\{\{\s*MOMENT\s*:\s*([\s\S]*?)\s*\}\}/i);
-    if (momentMatch) {
-        const momentContent = momentMatch[1].trim();
-        replyContent = replyContent.replace(momentMatch[0], ''); 
-        const newMoment: Moment = { 
-            id: Date.now().toString(), 
-            authorId: currentChar.id, 
-            content: momentContent, 
-            timestamp: Date.now(), 
-            likes: [], 
-            comments: [] 
-        };
-        onUpdateCharacter(prev => ({ ...prev, moments: [newMoment, ...(prev.moments || [])] }));
-        if (onShowNotification) onShowNotification(`${currentChar.remark} 发布了朋友圈`);
-    }
-
-    const rawBubbles = replyContent.split('|||');
-    const processedBubbles: {type: 'text'|'nudge', content: string}[] = [];
-    rawBubbles.forEach((rb: string) => {
-        if (rb.includes('{{NUDGE}}')) {
-            const parts = rb.split('{{NUDGE}}');
-            parts.forEach((p: string, idx: number) => {
-                if (p.trim()) processedBubbles.push({ type: 'text', content: p.trim() });
-                if (idx < parts.length - 1) processedBubbles.push({ type: 'nudge', content: `${character.remark} 拍了拍我` });
-            });
         } else {
-            if (rb.trim()) processedBubbles.push({ type: 'text', content: rb.trim() });
+            // --- ONLINE MODE: TAG PARSER V3 ---
+            const result = parseAIResponseTags(cleanResponse, currentChar);
+            messagesToAdd.push(...result.messages);
+            messagesToRetract.push(...result.retracts);
+
+            if (messagesToAdd.length === 0) {
+                 console.log("AI generated empty content, suppressing.");
+            }
         }
-    });
 
-    setIsTyping(false);
+        setIsTyping(false);
 
-    for (let i = 0; i < processedBubbles.length; i++) {
-        await new Promise(resolve => setTimeout(resolve, i === 0 ? 300 : 800));
-        const item = processedBubbles[i];
-        const newMsg: Message = {
-            id: Date.now().toString() + i,
-            role: item.type === 'nudge' ? 'system' : 'model',
-            content: item.content,
-            osContent: (i === 0 && item.type === 'text') ? osContent : undefined,
-            timestamp: Date.now() + i,
-            mode: isOffline ? 'offline' : (isTheater ? 'theater' : 'online'),
-            scenarioId: activeScenarioId || undefined
-        };
+        for (let i = 0; i < messagesToAdd.length; i++) {
+            await new Promise(resolve => setTimeout(resolve, i === 0 ? 300 : 800));
+            const newMsg = messagesToAdd[i];
 
-        if (isTheater && currentScenario && !currentScenario.isConnected) {
-             onUpdateCharacter(prev => ({ 
-                 ...prev, 
-                 scenarios: prev.scenarios?.map(s => s.id === activeScenarioId ? { ...s, messages: [...(s.messages || []), newMsg] } : s)
-             }));
-        } else {
-            onAddMessage(currentChar.id, newMsg);
+            if (isTheater && currentScenario && !currentScenario.isConnected) {
+                onUpdateCharacter(prev => ({ 
+                    ...prev, 
+                    scenarios: prev.scenarios?.map(s => s.id === activeScenarioId ? { ...s, messages: [...(s.messages || []), newMsg] } : s)
+                }));
+            } else {
+                onAddMessage(currentChar.id, newMsg);
+            }
+
+            // Handle Retraction
+            const retractInfo = messagesToRetract.find(r => r.id === newMsg.id);
+            if (retractInfo) {
+                setTimeout(() => {
+                    const updateRetract = (msgs: Message[]) => msgs.map(m => { 
+                        if (m.id === retractInfo.id) { 
+                            return { 
+                                ...m, 
+                                isRecalled: true, 
+                                originalContent: m.content, 
+                                content: '对方撤回了一条消息', 
+                                osContent: undefined 
+                            }; 
+                        } 
+                        return m; 
+                    });
+
+                    if (isTheater && currentScenario && !currentScenario.isConnected) {
+                        onUpdateCharacter(prev => ({ ...prev, scenarios: prev.scenarios?.map(s => s.id === activeScenarioId ? { ...s, messages: updateRetract(s.messages || []) } : s) }));
+                    } else {
+                        onUpdateCharacter(prev => ({ ...prev, messages: updateRetract(prev.messages) }));
+                    }
+                }, retractInfo.delay);
+            }
         }
+
+    } catch (e: any) {
+        console.error(e);
+        if (onShowNotification) onShowNotification("❌ 连接中断");
+        setIsTyping(false);
     }
     setGlobalGenerating(false);
   };
@@ -350,8 +573,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
   const handleQuoteMsg = () => { if (!contextMenuMsgId) return; const listToSearch = (viewMode === 'theater_room' && activeScenario && !activeScenario.isConnected) ? activeScenario.messages : character.messages; const msg = listToSearch?.find(m => m.id === contextMenuMsgId); if (msg && !msg.isRecalled) { setQuotingMsg(msg); if (inputRef.current) inputRef.current.focus(); } setContextMenuMsgId(null); };
   const saveCharSettings = () => { onUpdateCharacter(tempCharConfig); setShowCharSettings(false); setShowOfflineSettings(false); };
   const handleOfflineBackgroundUpload = (e: React.ChangeEvent<HTMLInputElement>) => { const file = e.target.files?.[0]; if (file) { const reader = new FileReader(); reader.onload = (ev) => { if (ev.target?.result) setTempCharConfig(prev => ({ ...prev, offlineConfig: { ...prev.offlineConfig, bgUrl: ev.target!.result as string } })); }; reader.readAsDataURL(file); } };
-  const handleCharAvatarUpload = (e: React.ChangeEvent<HTMLInputElement>) => { const file = e.target.files?.[0]; if (file) { const reader = new FileReader(); reader.onload = (ev) => { if (ev.target?.result) setTempCharConfig(prev => ({...prev, avatar: ev.target!.result as string})); }; reader.readAsDataURL(file); } };
   const handleUserMaskAvatarUpload = (e: React.ChangeEvent<HTMLInputElement>) => { const file = e.target.files?.[0]; if (file) { const reader = new FileReader(); reader.onload = (ev) => { if (ev.target?.result) setTempCharConfig(prev => ({...prev, userMaskAvatar: ev.target!.result as string})); }; reader.readAsDataURL(file); } };
+  const handleAvatarUpload = (e: React.ChangeEvent<HTMLInputElement>) => { const file = e.target.files?.[0]; if (file) { const reader = new FileReader(); reader.onload = (ev) => { if (ev.target?.result) setTempCharConfig(prev => ({...prev, avatar: ev.target!.result as string})); }; reader.readAsDataURL(file); } };
   const handleBackgroundUpload = (e: React.ChangeEvent<HTMLInputElement>) => { const file = e.target.files?.[0]; if (file) { const reader = new FileReader(); reader.onload = (ev) => { if (ev.target?.result) setTempCharConfig(prev => ({...prev, chatBackground: ev.target!.result as string})); }; reader.readAsDataURL(file); } };
   const toggleMemorySelection = (id: string) => { onUpdateCharacter(prev => ({ ...prev, memories: prev.memories.map(m => m.id === id ? { ...m, selected: !m.selected } : m) })); };
   const handleFuse = async () => { if (!settings.apiKey) { alert("请配置 API Key"); return; } const selected = character.memories.filter(m => m.selected); if (selected.length < 2) return; setIsTyping(true); setGlobalGenerating(true); const contentToFuse = selected.map(m => m.content).join('\n---\n'); const prompt = `${FUSE_PROMPT}\n\n待合并记忆:\n${contentToFuse}`; try { const fusedContent = await generateChatCompletion([{ role: 'user', content: prompt }], settings); const newMemory: MemoryCard = { id: Date.now().toString(), timestamp: Date.now(), event: "融合记忆", content: fusedContent, location: "思维殿堂" }; onUpdateCharacter(prev => ({ ...prev, memories: [newMemory, ...prev.memories.filter(m => !m.selected)] })); } catch (e) { console.error(e); } setIsTyping(false); setGlobalGenerating(false); };
@@ -377,6 +600,48 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
         </div>
       )}
       {showClearHistoryModal && (<div className="absolute inset-0 z-50 bg-black/50 flex items-center justify-center p-6"><div className="bg-white w-full max-w-sm rounded-xl p-6 shadow-2xl animate-fade-in"><h3 className="text-gray-900 font-bold text-lg mb-4">清空确认</h3><div className="flex flex-col gap-2"><button onClick={() => confirmClearHistory(false)} className="w-full py-3 bg-red-50 text-red-700 font-bold rounded-lg hover:bg-red-100">仅清空聊天记录</button><button onClick={() => confirmClearHistory(true)} className="w-full py-3 bg-red-600 text-white font-bold rounded-lg">完全重置</button><button onClick={() => setShowClearHistoryModal(false)} className="w-full py-3 text-gray-500 font-bold">取消</button></div></div></div>)}
+      
+      {/* Inner Monologue Modal with Dark Mode Toggle */}
+      {activeInnerContent && (
+        <div className="absolute inset-0 z-50 bg-black/60 flex items-center justify-center p-8 animate-fade-in" onClick={() => setActiveInnerContent(null)}>
+            <div 
+                className={`w-full max-w-sm rounded-lg p-6 shadow-2xl relative animate-slide-up flex flex-col items-center text-center transition-colors duration-300 ${innerDarkMode ? 'bg-stone-900 text-stone-200' : 'bg-white text-gray-800'}`} 
+                onClick={e => e.stopPropagation()}
+            >
+                {/* Toggle Button */}
+                <button 
+                    onClick={() => setInnerDarkMode(!innerDarkMode)}
+                    className={`absolute top-3 right-3 w-8 h-8 rounded-full flex items-center justify-center transition-colors ${innerDarkMode ? 'bg-stone-800 text-amber-500 hover:bg-stone-700' : 'bg-gray-100 text-gray-400 hover:bg-gray-200'}`}
+                >
+                    <i className={`fas ${innerDarkMode ? 'fa-sun' : 'fa-moon'}`}></i>
+                </button>
+
+                <div className="text-amber-500 text-2xl mb-4"><i className="fas fa-heart"></i></div>
+                <div className="font-serif text-[15px] leading-loose whitespace-pre-wrap">
+                    {activeInnerContent}
+                </div>
+                <div className={`mt-6 pt-4 border-t w-full ${innerDarkMode ? 'border-stone-800' : 'border-gray-100'}`}>
+                    <button onClick={() => setActiveInnerContent(null)} className={`text-xs font-sans tracking-widest ${innerDarkMode ? 'text-stone-500' : 'text-gray-400'}`}>关闭心声</button>
+                </div>
+            </div>
+        </div>
+      )}
+
+      {/* Photo Description Modal */}
+      {photoDescription && (
+        <div className="absolute inset-0 z-50 bg-black/60 flex items-center justify-center p-8 animate-fade-in" onClick={() => setPhotoDescription(null)}>
+            <div className="bg-white w-full max-w-sm rounded-lg p-6 shadow-2xl relative animate-slide-up flex flex-col items-center text-center" onClick={e => e.stopPropagation()}>
+                <div className="text-gray-400 text-3xl mb-4"><i className="fas fa-image"></i></div>
+                <div className="font-serif text-[15px] leading-loose text-gray-800 whitespace-pre-wrap italic">
+                    “{photoDescription}”
+                </div>
+                <div className="mt-6 pt-4 border-t w-full border-gray-100">
+                    <button onClick={() => setPhotoDescription(null)} className="text-xs text-gray-400 font-sans tracking-widest">关闭照片</button>
+                </div>
+            </div>
+        </div>
+      )}
+
       {showOSModal && (<div className="absolute inset-0 z-50 bg-black/50 flex items-center justify-center p-6"><div className="bg-white w-full max-w-sm rounded-xl p-6 shadow-2xl relative animate-slide-up"><button onClick={() => setShowOSModal(false)} className="absolute top-2 right-2 text-gray-400 w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100"><i className="fas fa-times"></i></button><h3 className="font-bold text-indigo-600 mb-4 flex items-center gap-2">内心独白 (OS)</h3><div className="bg-indigo-50 p-3 rounded-lg mb-4 flex items-center justify-between"><div><div className="font-bold text-indigo-900 text-sm">OS 开关</div></div><label className="relative inline-flex items-center cursor-pointer"><input type="checkbox" className="sr-only peer" checked={character.showOS || false} onChange={(e) => onUpdateCharacter(prev => ({...prev, showOS: e.target.checked}))}/><div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div></label></div><textarea className="w-full h-32 p-2 border border-gray-200 rounded text-xs bg-gray-50 focus:outline-none focus:border-indigo-500 font-mono text-gray-600" value={character.osSystemPrompt || DEFAULT_OS_PROMPT} onChange={(e) => onUpdateCharacter(prev => ({...prev, osSystemPrompt: e.target.value}))}/></div></div>)}
       {editingMsgId && (<div className="absolute inset-0 z-50 bg-black/50 flex items-center justify-center p-4"><div className="bg-white w-full max-w-sm rounded-xl p-4 shadow-2xl animate-slide-up"><h3 className="font-bold mb-2 text-gray-700">编辑消息</h3><textarea value={editContent} onChange={e => setEditContent(e.target.value)} className="w-full h-32 border p-2 rounded mb-4 focus:outline-none focus:border-blue-500 resize-none bg-gray-50"/><div className="flex gap-3"><button onClick={() => setEditingMsgId(null)} className="flex-1 py-2 bg-gray-100 text-gray-600 rounded font-bold">取消</button><button onClick={confirmEdit} className="flex-1 py-2 bg-blue-600 text-white rounded font-bold">保存</button></div></div></div>)}
       {showMemoryFurnace && (
@@ -418,9 +683,22 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
       }
   }, [character.messages.length]);
 
-  const renderImmersiveList = (messages: Message[], bgColor?: string) => (
-      <div className="flex-1 overflow-y-auto p-6 space-y-8 no-scrollbar relative z-10" ref={messagesEndRef}>
-           {messages.filter(m => !m.isHidden).map((msg) => (
+  const renderImmersiveList = (messages: Message[], bgColor?: string) => {
+      // Lazy Load Logic for Immersive
+      const visibleMsgs = messages.slice(-visibleLimit);
+      const hasMore = messages.length > visibleLimit;
+
+      return (
+          <div className="flex-1 overflow-y-auto p-6 space-y-8 no-scrollbar relative z-10">
+            {hasMore && (
+                <div className="flex justify-center py-4 animate-fade-in">
+                    <button onClick={() => setVisibleLimit(prev => prev + 50)} className="text-xs bg-stone-800 text-stone-400 border border-stone-600 px-4 py-2 rounded-full hover:bg-stone-700 transition">
+                        <i className="fas fa-history mr-2"></i>加载更多剧情
+                    </button>
+                </div>
+            )}
+            
+            {visibleMsgs.filter(m => !m.isHidden).map((msg) => (
                <div key={msg.id} {...bindLongPress(msg.id)} className={`animate-fade-in ${msg.role === 'user' ? 'pl-8 border-l-2 border-stone-600' : ''}`}>
                     <div className="text-xs text-stone-500 mb-1 font-sans uppercase tracking-wider flex justify-between">
                         <span>{msg.role === 'user' ? (character.useLocalPersona ? character.userMaskName : settings.globalPersona.name) : character.name}</span>
@@ -428,7 +706,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
                     </div>
                     {msg.quote && !msg.isRecalled && ( <div className="mb-2 pl-2 border-l-2 border-amber-600 bg-stone-800/50 p-1 text-xs text-stone-400 font-sans rounded"><span className="font-bold">{msg.quote.name}:</span> {msg.quote.content}</div> )}
                     {msg.isRecalled ? (
-                        <div className="text-stone-600 italic cursor-pointer text-sm" onClick={() => alert(`原内容:\n${msg.originalContent}`)}>(对方撤回了动作 - 点击偷看)</div>
+                        <div className="text-stone-600 italic cursor-pointer text-sm" onClick={() => alert(`原内容:\n${msg.originalContent || '无内容'}`)}>(对方撤回了动作 - 点击偷看)</div>
                     ) : (
                         <div 
                             className={`leading-loose whitespace-pre-wrap ${msg.role === 'user' ? 'text-stone-300 italic' : 'text-amber-100/90'}`} 
@@ -443,44 +721,200 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
                </div>
            ))}
            {isTyping && <div className="mt-4 animate-slide-up"><LoadingBubbles color={bgColor} /></div>}
-      </div>
-  );
+           {/* Anchor div for auto-scrolling */}
+           <div ref={messagesEndRef} />
+        </div>
+      );
+  };
 
   // Simplified filter logic to satisfy TS
-  const onlineMessages = character.messages.filter(m => !m.isHidden && (!m.mode || m.mode === 'online'));
+  // Filter for Online Messages
+  const allOnlineMessages = useMemo(() => character.messages.filter(m => !m.isHidden && (!m.mode || m.mode === 'online')), [character.messages]);
+  
+  // --- RENDER HELPERS FOR SPECIAL MESSAGES ---
+  
+  const renderRichMessage = (msg: Message) => {
+      // 1. Voice Message
+      if (msg.msgType === 'voice') {
+          return (
+              <div 
+                className="flex items-center gap-2 min-w-[100px] cursor-pointer active:opacity-70 transition" 
+                onClick={(e) => {
+                    const el = e.currentTarget;
+                    el.classList.add('animate-pulse');
+                    setTimeout(() => {
+                        el.classList.remove('animate-pulse');
+                        if(msg.meta?.textContent) alert(`[语音转文字]:\n${msg.meta.textContent}`);
+                    }, 1000);
+                }}
+              >
+                  <i className="fas fa-rss rotate-45 text-lg"></i>
+                  <span className="font-bold">{msg.meta?.duration || 3}"</span>
+                  <div className="w-1 h-1 bg-red-500 rounded-full ml-auto"></div>
+              </div>
+          );
+      }
+      
+      // 2. Transfer (Red Packet)
+      if (msg.msgType === 'transfer') {
+          return (
+              <div className="bg-[#fa9d3b] p-0 rounded-[18px] w-60 overflow-hidden flex flex-col shadow-sm cursor-pointer active:brightness-95 transition">
+                  <div className="p-4 flex items-center gap-4 text-white">
+                      <div className="w-10 h-10 border-2 border-white/30 rounded-full flex items-center justify-center">
+                          <i className="fas fa-yen-sign text-xl"></i>
+                      </div>
+                      <div className="flex flex-col">
+                          <span className="font-bold text-base">¥{Number(msg.meta?.amount).toFixed(2)}</span>
+                          <span className="text-xs opacity-90">{msg.content}</span>
+                      </div>
+                  </div>
+                  <div className="bg-white/10 p-1 px-3 text-[10px] text-white/70">
+                      微信转账
+                  </div>
+              </div>
+          );
+      }
 
-  const renderChatList = (messages: Message[]) => (
-    <div className="flex-1 overflow-y-auto p-4 space-y-4 no-scrollbar">
-        {messages.map((msg, idx) => (
-            <div key={msg.id} {...bindLongPress(msg.id)} className={`flex w-full ${msg.role === 'user' ? 'justify-end' : 'justify-start'} animate-fade-in`}>
-                {msg.role === 'model' && ( <img src={character.avatar} alt="avatar" onDoubleClick={handlePat} className="w-9 h-9 rounded bg-gray-300 mr-2 mt-0 object-cover cursor-pointer hover:opacity-90 active:scale-95 transition" /> )}
-                {msg.role === 'system' && ( <div className="w-full flex justify-center my-2"><span className="bg-gray-200/50 text-gray-500 text-xs px-2 py-1 rounded">{msg.content}</span></div> )}
-                {msg.role !== 'system' && (
-                    <div className={`max-w-[75%] flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'} ${msg.quote ? 'min-w-[40%]' : 'w-fit'}`}>
-                        {character.showOS && msg.osContent && !msg.isRecalled && ( <div className="text-xs text-gray-500 italic mb-1 pl-1 border-l-2 border-indigo-300 animate-fade-in bg-white/50 p-1 rounded-r"><i className="fas fa-thought-bubble mr-1"></i>{msg.osContent}</div> )}
-                        {msg.isRecalled ? (
-                            <div className="bg-gray-200 text-gray-500 text-xs px-2 py-1 rounded cursor-pointer select-none" onClick={() => alert(`原内容：\n${msg.originalContent}`)}>{msg.content} <span className="text-[8px]">(点击偷看)</span></div>
-                        ) : (
-                            <div 
-                                className={`p-2.5 rounded text-[15px] leading-relaxed break-words shadow-sm relative text-left max-w-full flex flex-col w-fit ${msg.mode === 'offline' ? 'opacity-80 border border-purple-200' : ''}`}
-                                style={msg.role === 'user' 
-                                    ? { ...parseStyleString(character.styleConfig?.onlineUser || DEFAULT_STYLE_CONFIG.onlineUser), fontSize: `${character.chatFontSize || 15}px` }
-                                    : { ...parseStyleString(character.styleConfig?.onlineModel || DEFAULT_STYLE_CONFIG.onlineModel), fontSize: `${character.chatFontSize || 15}px` }
-                                }
-                            >
-                                {msg.quote && ( <div className={`mb-1 p-1 rounded text-xs border-l-2 mb-2 w-full ${msg.role === 'user' ? 'bg-[#89d961] border-[#6dbf44] text-emerald-900' : 'bg-gray-100 border-gray-300 text-gray-500'}`}><span className="font-bold mr-1">{msg.quote.name}:</span><span className="line-clamp-2">{msg.quote.content}</span></div> )}
-                                {(!character.styleConfig) && <div className={`absolute top-3 w-2 h-2 rotate-45 ${msg.role === 'user' ? '-right-1 bg-[#95ec69]' : '-left-1 bg-white'}`}></div>}
-                                <span className="relative z-10 whitespace-pre-wrap">{msg.content}</span>
-                            </div>
-                        )}
-                    </div>
-                )}
-                {msg.role === 'user' && ( <img src={currentUserAvatar} className="w-9 h-9 rounded bg-gray-300 ml-2 mt-0 object-cover" /> )}
-            </div>
-        ))}
-        <div ref={messagesEndRef} />
-    </div>
-  );
+      // 3. Location
+      if (msg.msgType === 'location') {
+          return (
+              <div className="w-60 bg-white rounded-[18px] overflow-hidden flex flex-col border border-gray-200 shadow-sm cursor-pointer">
+                  <div className="p-2 text-sm font-bold truncate text-gray-800">{msg.content}</div>
+                  <div className="text-[10px] text-gray-400 px-2 pb-1 truncate">北京市 海淀区</div>
+                  <div className="h-28 bg-gray-200 relative">
+                       <img src="https://picsum.photos/400/200?grayscale&blur=2" className="w-full h-full object-cover opacity-60" />
+                       <div className="absolute inset-0 flex items-center justify-center text-red-500 text-3xl pb-2 drop-shadow-md"><i className="fas fa-map-marker-alt"></i></div>
+                  </div>
+              </div>
+          );
+      }
+
+      // 4. Image Placeholder (New Design)
+      if (msg.msgType === 'image') {
+          return (
+              <div 
+                onClick={() => setPhotoDescription(msg.content)}
+                className="w-24 h-24 bg-white border border-gray-200 rounded-[18px] flex items-center justify-center cursor-pointer shadow-sm hover:bg-gray-50 transition active:scale-95"
+              >
+                  <span className="text-xs text-gray-400 font-serif tracking-widest">照片</span>
+              </div>
+          );
+      }
+
+      // 5. Video Call Invite
+      if (msg.msgType === 'video_call') {
+          return (
+              <div className="flex items-center gap-3 min-w-[180px] py-1 cursor-pointer">
+                  <div className="w-9 h-9 rounded-full bg-gradient-to-br from-orange-400 to-red-400 text-white flex items-center justify-center shadow-sm"><i className="fas fa-video"></i></div>
+                  <div className="flex flex-col">
+                      <span className="font-bold text-sm">{msg.content}</span>
+                      <span className="text-[10px] opacity-70">点击接听</span>
+                  </div>
+              </div>
+          );
+      }
+
+      // 6. Gossip / Article
+      if (msg.msgType === 'gossip') {
+          return (
+              <div className="w-64 bg-white rounded-[18px] overflow-hidden border border-gray-200 flex flex-col shadow-sm cursor-pointer">
+                  <div className="p-3 pb-1">
+                     <div className="font-bold text-sm line-clamp-2 mb-1 text-gray-800">{msg.meta?.title || msg.content}</div>
+                  </div>
+                  <div className="h-32 bg-gray-100 relative mx-3 mb-2 rounded-lg overflow-hidden">
+                      <img src={msg.meta?.imageUrl || 'https://picsum.photos/400/200'} className="w-full h-full object-cover" />
+                  </div>
+                  <div className="px-3 pb-3">
+                      <div className="text-[10px] text-gray-400 line-clamp-2">{msg.meta?.content}</div>
+                  </div>
+                  <div className="border-t p-1 px-3 text-[10px] text-gray-400 flex justify-between items-center bg-gray-50">
+                      <span>微信公众号</span>
+                      <i className="fas fa-chevron-right"></i>
+                  </div>
+              </div>
+          );
+      }
+
+      // Default Text
+      return <span className="relative z-10 whitespace-pre-wrap break-words leading-relaxed">{formatLegacyMessage(msg.content)}</span>;
+  };
+
+  const renderChatList = () => {
+    // Lazy Load Slice
+    const messagesToRender = allOnlineMessages.slice(-visibleLimit);
+    const hasMore = allOnlineMessages.length > visibleLimit;
+
+    return (
+        <div className="flex-1 overflow-y-auto p-4 space-y-4 no-scrollbar">
+            {hasMore && (
+                <div className="flex justify-center py-2 animate-fade-in">
+                    <button 
+                        onClick={() => setVisibleLimit(prev => prev + 50)} 
+                        className="text-xs text-blue-500 bg-blue-50 px-4 py-1.5 rounded-full hover:bg-blue-100 transition shadow-sm"
+                    >
+                        加载更多历史消息
+                    </button>
+                </div>
+            )}
+            
+            {messagesToRender.map((msg, idx) => (
+                <div key={msg.id} {...bindLongPress(msg.id)} className={`flex w-full ${msg.role === 'user' ? 'justify-end' : 'justify-start'} animate-fade-in group`}>
+                    {msg.role === 'model' && ( <img src={character.avatar} alt="avatar" onDoubleClick={handlePat} className="w-9 h-9 rounded-full bg-gray-300 mr-2 mt-auto object-cover cursor-pointer shadow-sm active:scale-95 transition" /> )}
+                    
+                    {/* System Messages (Nudge, Time, etc) */}
+                    {msg.role === 'system' && ( <div className="w-full flex justify-center my-2"><span className="bg-gray-200/50 text-gray-500 text-xs px-2 py-1 rounded">{msg.content}</span></div> )}
+                    
+                    {/* Normal Messages */}
+                    {msg.role !== 'system' && (
+                        <div className={`max-w-[75%] flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'} ${msg.quote ? 'min-w-[40%]' : 'w-fit'}`}>
+                            {msg.isRecalled ? (
+                                <div className="bg-gray-200 text-gray-500 text-xs px-2 py-1 rounded cursor-pointer select-none" onClick={() => alert(`原内容：\n${msg.originalContent || '未知内容'}`)}>{msg.content} <span className="text-[8px] opacity-0 group-hover:opacity-100 transition">(点击偷看)</span></div>
+                            ) : (
+                                // Determine Bubble Style based on content type
+                                <div className="relative group/bubble">
+                                    <div 
+                                        className={`
+                                            shadow-sm relative text-left max-w-full flex flex-col w-fit 
+                                            ${msg.mode === 'offline' ? 'opacity-80 border border-purple-200' : ''}
+                                            ${['transfer', 'location', 'gossip', 'image'].includes(msg.msgType || '') ? 'p-0 bg-transparent shadow-none' : 'px-4 py-2.5'}
+                                        `}
+                                        style={
+                                            // Override styles for non-text bubbles to avoid green background
+                                            ['transfer', 'location', 'gossip', 'image'].includes(msg.msgType || '') 
+                                            ? {} 
+                                            : (msg.role === 'user' 
+                                                ? { ...parseStyleString(character.styleConfig?.onlineUser || DEFAULT_STYLE_CONFIG.onlineUser), fontSize: `${character.chatFontSize || 15}px`, borderRadius: '20px 4px 20px 20px' }
+                                                : { ...parseStyleString(character.styleConfig?.onlineModel || DEFAULT_STYLE_CONFIG.onlineModel), fontSize: `${character.chatFontSize || 15}px`, borderRadius: '4px 20px 20px 20px' })
+                                        }
+                                    >
+                                        {msg.quote && ( <div className={`mb-1 p-1 rounded text-xs border-l-2 mb-2 w-full ${msg.role === 'user' ? 'bg-[#89d961] border-[#6dbf44] text-emerald-900' : 'bg-gray-100 border-gray-300 text-gray-500'}`}><span className="font-bold mr-1">{msg.quote.name}:</span><span className="line-clamp-2">{msg.quote.content}</span></div> )}
+                                        
+                                        {/* Removed simple CSS arrow to use rounded corners instead for cleaner look */}
+                                        
+                                        {renderRichMessage(msg)}
+                                    </div>
+                                    
+                                    {/* Inner Monologue Heart Button - Positioned to the right of AI bubbles */}
+                                    {character.showOS && msg.osContent && !msg.isRecalled && msg.role === 'model' && (
+                                        <button 
+                                            onClick={(e) => { e.stopPropagation(); setActiveInnerContent(msg.osContent || ''); }}
+                                            className="absolute -right-6 bottom-0 text-gray-300 hover:text-red-400 hover:scale-110 transition-all cursor-pointer w-5 h-5 flex items-center justify-center animate-fade-in z-10"
+                                            title="点击偷听心声"
+                                        >
+                                            <i className="fas fa-heart text-xs"></i>
+                                        </button>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    )}
+                    {msg.role === 'user' && ( <img src={currentUserAvatar} className="w-9 h-9 rounded-full bg-gray-300 ml-2 mt-auto object-cover shadow-sm" /> )}
+                </div>
+            ))}
+            <div ref={messagesEndRef} />
+        </div>
+    );
+  };
 
   // --- 1. THEATER LIST VIEW ---
   if (viewMode === 'theater_list') {
@@ -534,7 +968,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
                   <button onClick={() => handleSend(true)} className="w-10 h-10 rounded-full bg-amber-600 text-white flex items-center justify-center font-bold"><i className="fas fa-paper-plane"></i></button>
               </div>
               {renderCommonModals()}
-              {showScenarioSettings && (<div className="absolute inset-0 z-50 bg-black/80 flex items-center justify-center p-6"><div className="bg-stone-800 w-full max-w-sm rounded-xl p-6 shadow-2xl border border-stone-600 animate-slide-up"><h3 className="text-amber-500 font-bold mb-4">剧场设置</h3><div className="space-y-4"><div><label className="text-xs text-stone-400 font-bold uppercase">System Prompt</label><textarea className="w-full h-24 bg-stone-900 border border-stone-700 rounded p-2 text-xs text-stone-300 focus:border-amber-500 focus:outline-none" value={activeScenario.systemPrompt} onChange={e => updateActiveScenario({ systemPrompt: e.target.value })}/></div>{!activeScenario.isConnected && (<div><label className="text-xs text-stone-400 font-bold uppercase">独立上下文</label><textarea className="w-full h-16 bg-stone-900 border border-stone-700 rounded p-2 text-xs text-stone-300 focus:border-amber-500 focus:outline-none" value={activeScenario.contextMemory || ''} onChange={e => updateActiveScenario({ contextMemory: e.target.value })}/></div>)}<div><label className="text-xs text-stone-400 font-bold uppercase">剧场壁纸</label><input type="file" accept="image/*" onChange={(e) => { const file = e.target.files?.[0]; if (file) { const reader = new FileReader(); reader.onload = (ev) => { if (ev.target?.result) updateActiveScenario({ wallpaper: ev.target!.result as string }); }; reader.readAsDataURL(file); } }} className="text-xs text-stone-500 w-full mt-1"/></div></div><button onClick={() => setShowScenarioSettings(false)} className="w-full mt-6 py-2 bg-stone-700 text-stone-200 rounded font-bold">关闭</button></div></div>)}
+              {showScenarioSettings && (<div className="absolute inset-0 z-50 bg-black/80 flex items-center justify-center p-6"><div className="bg-stone-800 w-full max-w-sm rounded-xl p-6 shadow-2xl border border-stone-600 animate-slide-up"><h3 className="text-amber-500 font-bold mb-4">剧场设置</h3><div className="space-y-4"><div><label className="text-xs text-stone-400 font-bold uppercase">System Prompt</label><textarea className="w-full h-24 bg-stone-900 border border-stone-700 rounded p-2 text-xs text-stone-300 focus:border-amber-500 focus:outline-none" value={activeScenario.systemPrompt} onChange={e => updateActiveScenario({ systemPrompt: e.target.value })}/></div>{!activeScenario.isConnected && (<div><label className="text-xs text-stone-400 font-bold uppercase">独立上下文</label><textarea className="w-full h-16 bg-stone-900 border border-stone-700 rounded p-2 text-xs text-stone-300 focus:border-amber-500 focus:outline-none" value={activeScenario.contextMemory || ''} onChange={e => updateActiveScenario({ contextMemory: e.target.value })}/></div>)}<div><label className="text-xs text-stone-400 font-bold uppercase">剧场壁纸</label><input type="file" accept="image/*" onChange={(e) => { const file = e.target.files?.[0]; if (file) { const reader = new FileReader(); reader.onload = (ev) => { if (ev.target?.result) updateActiveScenario({ wallpaper: ev.target!.result as string }); }; reader.readAsDataURL(file); } }} className="text-xs text-stone-500 w-full mt-1"/></div><div><label className="text-xs text-stone-400 font-bold uppercase">单页加载消息数: {tempCharConfig.renderMessageLimit || 50}</label><input type="range" min="20" max="100" step="10" value={tempCharConfig.renderMessageLimit || 50} onChange={(e) => setTempCharConfig({...tempCharConfig, renderMessageLimit: parseInt(e.target.value)})} className="w-full accent-amber-600 h-2 bg-stone-700 rounded-lg appearance-none cursor-pointer mt-1"/></div></div><div className="flex gap-2 mt-6"><button onClick={() => setShowScenarioSettings(false)} className="flex-1 py-2 bg-stone-700 text-stone-200 rounded font-bold">关闭</button><button onClick={saveCharSettings} className="flex-1 py-2 bg-amber-700 text-black font-bold rounded">保存</button></div></div></div>)}
           </div>
       );
   }
@@ -560,7 +994,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
                </div>
                {renderCommonModals()}
                {showOfflineSettings && (
-                   <div className="absolute inset-0 bg-black/80 z-50 flex items-center justify-center p-4"><div className="bg-stone-900 border border-stone-700 w-full max-w-md rounded-lg p-6 shadow-2xl animate-slide-up text-stone-300 max-h-full overflow-y-auto"><h3 className="font-bold text-xl text-amber-500 mb-6 border-b border-stone-800 pb-2">线下模式配置</h3><div className="space-y-4 font-sans"><div><label className="text-xs uppercase font-bold text-stone-500">指示器颜色</label><div className="flex gap-2 mt-1 flex-wrap">{OFFLINE_LOADING_COLORS.map(c => (<button key={c.name} onClick={() => setTempCharConfig({...tempCharConfig, offlineConfig: {...tempCharConfig.offlineConfig, indicatorColor: c.value}})} className={`w-6 h-6 rounded-full border border-stone-600 ${tempCharConfig.offlineConfig.indicatorColor === c.value ? 'ring-2 ring-white scale-110' : ''}`} style={{ backgroundColor: c.value }}/>))}</div></div><div><label className="text-xs uppercase font-bold text-stone-500">文风设定</label><input value={tempCharConfig.offlineConfig.style} onChange={e => setTempCharConfig({...tempCharConfig, offlineConfig: {...tempCharConfig.offlineConfig, style: e.target.value}})} className="w-full bg-stone-800 border-stone-700 rounded p-2 mt-1 focus:outline-none focus:border-amber-600"/></div><div><label className="text-xs uppercase font-bold text-stone-500">回复字数限制</label><input type="number" value={tempCharConfig.offlineConfig.wordCount} onChange={e => setTempCharConfig({...tempCharConfig, offlineConfig: {...tempCharConfig.offlineConfig, wordCount: parseInt(e.target.value) || 150}})} className="w-full bg-stone-800 border-stone-700 rounded p-2 mt-1 focus:outline-none focus:border-amber-600" placeholder="150"/></div><div><label className="text-xs uppercase font-bold text-stone-500">场景壁纸</label><div className="flex items-center gap-2 mt-1"><div className="w-12 h-12 bg-stone-800 border border-stone-700 rounded overflow-hidden">{tempCharConfig.offlineConfig.bgUrl ? <img src={tempCharConfig.offlineConfig.bgUrl} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-xs text-stone-600">无</div>}</div><input type="file" accept="image/*" onChange={handleOfflineBackgroundUpload} className="flex-1 text-xs text-stone-500 file:mr-2 file:py-1 file:px-2 file:rounded file:border-0 file:bg-stone-700 file:text-stone-300"/></div></div><div><label className="text-xs uppercase font-bold text-stone-500">System Prompt</label><textarea value={tempCharConfig.offlineConfig.systemPrompt} onChange={e => setTempCharConfig({...tempCharConfig, offlineConfig: {...tempCharConfig.offlineConfig, systemPrompt: e.target.value}})} className="w-full bg-stone-800 border-stone-700 rounded p-2 mt-1 h-32 text-xs font-mono focus:outline-none focus:border-amber-600"/></div></div><div className="mt-6 flex gap-3"><button onClick={() => setShowOfflineSettings(false)} className="flex-1 py-2 bg-stone-800 rounded hover:bg-stone-700">取消</button><button onClick={saveCharSettings} className="flex-1 py-2 bg-amber-700 text-black font-bold rounded hover:bg-amber-600">保存生效</button></div></div></div>
+                   <div className="absolute inset-0 bg-black/80 z-50 flex items-center justify-center p-4"><div className="bg-stone-900 border border-stone-700 w-full max-w-md rounded-lg p-6 shadow-2xl animate-slide-up text-stone-300 max-h-full overflow-y-auto"><h3 className="font-bold text-xl text-amber-500 mb-6 border-b border-stone-800 pb-2">线下模式配置</h3><div className="space-y-4 font-sans"><div><label className="text-xs uppercase font-bold text-stone-500">指示器颜色</label><div className="flex gap-2 mt-1 flex-wrap">{OFFLINE_LOADING_COLORS.map(c => (<button key={c.name} onClick={() => setTempCharConfig({...tempCharConfig, offlineConfig: {...tempCharConfig.offlineConfig, indicatorColor: c.value}})} className={`w-6 h-6 rounded-full border border-stone-600 ${tempCharConfig.offlineConfig.indicatorColor === c.value ? 'ring-2 ring-white scale-110' : ''}`} style={{ backgroundColor: c.value }}/>))}</div></div><div><label className="text-xs uppercase font-bold text-stone-500">文风设定</label><input value={tempCharConfig.offlineConfig.style} onChange={e => setTempCharConfig({...tempCharConfig, offlineConfig: {...tempCharConfig.offlineConfig, style: e.target.value}})} className="w-full bg-stone-800 border-stone-700 rounded p-2 mt-1 focus:outline-none focus:border-amber-600"/></div><div><label className="text-xs uppercase font-bold text-stone-500">回复字数限制</label><input type="number" value={tempCharConfig.offlineConfig.wordCount} onChange={e => setTempCharConfig({...tempCharConfig, offlineConfig: {...tempCharConfig.offlineConfig, wordCount: parseInt(e.target.value) || 150}})} className="w-full bg-stone-800 border-stone-700 rounded p-2 mt-1 focus:outline-none focus:border-amber-600" placeholder="150"/></div><div><label className="text-xs uppercase font-bold text-stone-500">单页加载消息数: {tempCharConfig.renderMessageLimit || 50}</label><input type="range" min="20" max="100" step="10" value={tempCharConfig.renderMessageLimit || 50} onChange={(e) => setTempCharConfig({...tempCharConfig, renderMessageLimit: parseInt(e.target.value)})} className="w-full accent-amber-600 h-2 bg-stone-700 rounded-lg appearance-none cursor-pointer mt-1"/></div><div><label className="text-xs uppercase font-bold text-stone-500">场景壁纸</label><div className="flex items-center gap-2 mt-1"><div className="w-12 h-12 bg-stone-800 border border-stone-700 rounded overflow-hidden">{tempCharConfig.offlineConfig.bgUrl ? <img src={tempCharConfig.offlineConfig.bgUrl} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-xs text-stone-600">无</div>}</div><input type="file" accept="image/*" onChange={handleOfflineBackgroundUpload} className="flex-1 text-xs text-stone-500 file:mr-2 file:py-1 file:px-2 file:rounded file:border-0 file:bg-stone-700 file:text-stone-300"/></div></div><div><label className="text-xs uppercase font-bold text-stone-500">System Prompt</label><textarea value={tempCharConfig.offlineConfig.systemPrompt} onChange={e => setTempCharConfig({...tempCharConfig, offlineConfig: {...tempCharConfig.offlineConfig, systemPrompt: e.target.value}})} className="w-full bg-stone-800 border-stone-700 rounded p-2 mt-1 h-32 text-xs font-mono focus:outline-none focus:border-amber-600"/></div></div><div className="mt-6 flex gap-3"><button onClick={() => setShowOfflineSettings(false)} className="flex-1 py-2 bg-stone-800 rounded hover:bg-stone-700">取消</button><button onClick={saveCharSettings} className="flex-1 py-2 bg-amber-700 text-black font-bold rounded hover:bg-amber-600">保存生效</button></div></div></div>
                )}
           </div>
       );
@@ -569,7 +1003,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
   // --- 4. STANDARD CHAT VIEW ---
   return (
     <div className="flex flex-col h-full relative text-black" style={{ backgroundImage: character.chatBackground ? `url(${character.chatBackground})` : undefined, backgroundColor: character.chatBackground ? undefined : '#ededed', backgroundSize: 'cover', backgroundPosition: 'center' }}>
-      <div className="bg-[#ededed]/95 backdrop-blur border-b border-gray-300 p-3 flex items-center justify-between sticky top-0 z-20 h-[60px]">
+      <div className="bg-[#ededed]/80 backdrop-blur-md border-b border-gray-200/50 p-3 flex items-center justify-between sticky top-0 z-20 h-[60px] shadow-sm">
         <div className="flex items-center">
           <button onClick={onBack} className="mr-3 text-gray-800 active:text-gray-500"><i className="fas fa-chevron-left text-lg"></i></button>
           <div className="flex flex-col cursor-pointer select-none" onDoubleClick={handlePat}>
@@ -580,14 +1014,16 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
         <div className="flex gap-4"><button onClick={() => setShowOSModal(true)} className={`w-8 h-8 rounded-full flex items-center justify-center transition ${character.showOS ? 'text-indigo-600 bg-indigo-100' : 'text-gray-600 hover:bg-gray-200'}`}><i className="fas fa-eye"></i></button><button onClick={() => setShowMemoryFurnace(true)} className="w-8 h-8 rounded-full hover:bg-gray-200 text-gray-600 flex items-center justify-center transition"><i className="fas fa-brain"></i></button></div>
       </div>
       
-      {renderChatList(onlineMessages)}
+      {renderChatList()}
 
       {quotingMsg && (<div className="bg-gray-100 px-3 py-2 flex justify-between items-center text-xs text-gray-500 border-t border-gray-200"><div className="truncate max-w-[85%]">回复 <span className="font-bold text-gray-700">{quotingMsg.role === 'model' ? character.remark : '我'}</span>: {quotingMsg.content}</div><button onClick={() => setQuotingMsg(null)}><i className="fas fa-times"></i></button></div>)}
-      <div className="bg-[#f7f7f7] p-2 border-t border-gray-300 flex flex-col gap-2 relative z-20">
-        <div className="flex items-end gap-2">
-            <button onClick={() => setShowDrawer(!showDrawer)} className={`w-8 h-8 mb-1 rounded-full border text-xl flex items-center justify-center transition-all ${showDrawer ? 'rotate-45 border-gray-600 text-gray-800' : 'border-gray-400 text-gray-500'}`} disabled={isGlobalGenerating}><i className="fas fa-plus-circle"></i></button>
-            <div className="flex-1 bg-white rounded p-2 min-h-[40px]"><textarea ref={inputRef} value={inputValue} onChange={(e) => setInputValue(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(false); }}} disabled={isGlobalGenerating} className="w-full bg-transparent resize-none focus:outline-none text-base max-h-24 disabled:text-gray-400" rows={1}/></div>
-            <div className="flex flex-col gap-1"><button onClick={() => handleSend(false)} disabled={isGlobalGenerating} className="bg-gray-200 text-gray-600 px-2 py-1 rounded text-[10px] font-bold whitespace-nowrap active:bg-gray-300 disabled:opacity-50">上屏</button><button onClick={() => handleSend(true)} disabled={isGlobalGenerating} className={`px-3 py-1 rounded text-sm font-bold shadow-sm whitespace-nowrap transition-colors ${isGlobalGenerating ? 'bg-gray-300 text-gray-100 cursor-not-allowed' : 'bg-[#07c160] text-white active:bg-[#06ad56]'}`}>发送</button></div>
+      <div className="bg-[#f7f7f7]/80 backdrop-blur-md border-t border-gray-200 flex flex-col gap-2 relative z-20 pb-4 pt-3">
+        <div className="flex items-end gap-2 px-3">
+            <button onClick={() => setShowDrawer(!showDrawer)} className={`w-9 h-9 mb-1.5 rounded-full border text-xl flex items-center justify-center transition-all ${showDrawer ? 'rotate-45 border-gray-500 text-gray-700' : 'border-gray-400 text-gray-500'}`} disabled={isGlobalGenerating}><i className="fas fa-plus-circle"></i></button>
+            <div className="flex-1 bg-white rounded-[24px] shadow-sm p-3 mb-1 border border-gray-200 focus-within:border-green-500 focus-within:ring-2 focus-within:ring-green-100 transition-all"><textarea ref={inputRef} value={inputValue} onChange={(e) => setInputValue(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(false); }}} disabled={isGlobalGenerating} className="w-full bg-transparent resize-none focus:outline-none text-base max-h-24 disabled:text-gray-400 leading-relaxed" rows={1} placeholder="发消息..."/></div>
+            <div className="flex flex-col gap-1 mb-1.5">
+                <button onClick={() => handleSend(true)} disabled={isGlobalGenerating} className={`w-14 h-9 rounded-full text-sm font-bold shadow-md transition-all flex items-center justify-center ${isGlobalGenerating ? 'bg-gray-300 text-gray-100 cursor-not-allowed' : 'bg-[#07c160] text-white active:scale-95'}`}><i className="fas fa-paper-plane"></i></button>
+            </div>
         </div>
         {showDrawer && (
             <div className="grid grid-cols-4 gap-6 p-6 bg-[#f7f7f7] border-t border-gray-200 animate-slide-up h-[220px]">
@@ -604,6 +1040,30 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
           <div className="absolute inset-0 bg-gray-100 z-50 flex flex-col animate-slide-up">
               <div className="bg-white p-4 shadow-sm flex items-center justify-between sticky top-0"><button onClick={() => setShowCharSettings(false)} className="text-gray-600 font-medium">取消</button><h3 className="font-bold text-lg">聊天信息</h3><button onClick={saveCharSettings} className="bg-[#07c160] text-white px-3 py-1 rounded font-bold text-sm">完成</button></div>
               <div className="flex-1 overflow-y-auto p-4 space-y-6">
+                  
+                  {/* NEW: Character Profile Editing */}
+                  <div className="bg-white p-4 rounded-xl shadow-sm space-y-4">
+                      <div className="flex flex-col items-center">
+                          <div className="relative w-20 h-20 group">
+                              <img src={tempCharConfig.avatar} className="w-full h-full rounded-full object-cover border-4 border-white shadow-md" />
+                              <div className="absolute inset-0 bg-black/40 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition cursor-pointer">
+                                  <i className="fas fa-camera text-white"></i>
+                              </div>
+                              <input type="file" accept="image/*" onChange={handleAvatarUpload} className="absolute inset-0 opacity-0 cursor-pointer" />
+                          </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-4">
+                          <div>
+                              <label className="text-xs text-gray-500 font-bold uppercase block mb-1">备注名</label>
+                              <input value={tempCharConfig.remark} onChange={e => setTempCharConfig({...tempCharConfig, remark: e.target.value})} className="w-full p-2 bg-gray-50 border rounded text-sm font-bold focus:border-green-500 focus:outline-none"/>
+                          </div>
+                          <div>
+                              <label className="text-xs text-gray-500 font-bold uppercase block mb-1">真名 (Prompt用)</label>
+                              <input value={tempCharConfig.name} onChange={e => setTempCharConfig({...tempCharConfig, name: e.target.value})} className="w-full p-2 bg-gray-50 border rounded text-sm focus:border-green-500 focus:outline-none"/>
+                          </div>
+                      </div>
+                  </div>
+
                   <div className="bg-white p-4 rounded-xl shadow-sm">
                       <div className="flex items-center justify-between"><div><h4 className="font-bold text-gray-700">本聊天室人设</h4><p className="text-xs text-gray-400">是否为此角色单独设置你的身份？</p></div><label className="relative inline-flex items-center cursor-pointer"><input type="checkbox" className="sr-only peer" checked={tempCharConfig.useLocalPersona} onChange={(e) => setTempCharConfig({...tempCharConfig, useLocalPersona: e.target.checked})}/><div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#07c160]"></div></label></div>
                       {tempCharConfig.useLocalPersona ? (
@@ -630,6 +1090,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
                       <p className="text-xs text-gray-400">开启后，AI 会根据聊天内容自动发布朋友圈</p>
                   </div>
                   <div className="bg-white p-4 rounded-xl shadow-sm"><h4 className="font-bold text-gray-700 mb-2 flex justify-between"><span>聊天字号 (px)</span><span className="text-green-600">{tempCharConfig.chatFontSize || 15}</span></h4><input type="range" min="12" max="24" value={tempCharConfig.chatFontSize || 15} onChange={(e) => setTempCharConfig({...tempCharConfig, chatFontSize: parseInt(e.target.value)})} className="w-full accent-green-500 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"/></div>
+                  <div className="bg-white p-4 rounded-xl shadow-sm"><h4 className="font-bold text-gray-700 mb-2 flex justify-between"><span>单页加载消息数</span><span className="text-green-600">{tempCharConfig.renderMessageLimit || 50}</span></h4><input type="range" min="20" max="100" step="10" value={tempCharConfig.renderMessageLimit || 50} onChange={(e) => setTempCharConfig({...tempCharConfig, renderMessageLimit: parseInt(e.target.value)})} className="w-full accent-green-500 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"/></div>
                   <div className="bg-white p-4 rounded-xl shadow-sm"><h4 className="font-bold text-gray-700 mb-2">上下文记忆 (Short Term)</h4><textarea value={tempCharConfig.contextMemory} onChange={e => setTempCharConfig({...tempCharConfig, contextMemory: e.target.value})} className="w-full h-24 p-2 text-sm bg-yellow-50 border border-yellow-200 rounded focus:outline-none placeholder-yellow-300/50" placeholder="在此输入当前场景的重要信息，AI会始终记住..."/></div>
                   <div className="bg-white p-4 rounded-xl shadow-sm flex items-center justify-between"><div><h4 className="font-bold text-gray-700">记忆回溯条数</h4><p className="text-xs text-gray-400">每次对话携带的历史消息数量</p></div><input type="number" value={tempCharConfig.historyCount || 20} onChange={e => setTempCharConfig({...tempCharConfig, historyCount: parseInt(e.target.value) || 20})} className="w-16 p-2 text-center bg-gray-100 rounded font-bold focus:outline-none focus:ring-2 focus:ring-green-500"/></div>
                   <div className="bg-white p-4 rounded-xl shadow-sm"><h4 className="font-bold text-gray-700 mb-2">角色人设 (Personality)</h4><textarea value={tempCharConfig.personality} onChange={e => setTempCharConfig({...tempCharConfig, personality: e.target.value})} className="w-full h-32 p-2 text-xs border border-gray-200 rounded focus:outline-none focus:border-green-500 resize-none bg-gray-50" placeholder="在此设定角色的性格、语气、口癖等..." /></div>

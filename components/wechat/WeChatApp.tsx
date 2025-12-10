@@ -122,6 +122,7 @@ const WeChatApp: React.FC<WeChatAppProps> = ({ settings, onUpdateSettings, chara
       chatFontSize: 15,
       contextMemory: '',
       historyCount: 20,
+      renderMessageLimit: 50, // Default to 50
       furnaceConfig: { autoEnabled: false, autoThreshold: 20, autoScope: 30, manualScope: 30 },
       offlineConfig: { systemPrompt: DEFAULT_OFFLINE_PROMPT, style: '细腻、沉浸、小说感', wordCount: 150, bgUrl: '', indicatorColor: '#f59e0b' },
       scenarios: [], memories: [], messages: [], diaries: [], moments: [], autoPostMoments: true, unread: 0,
@@ -172,6 +173,23 @@ const WeChatApp: React.FC<WeChatAppProps> = ({ settings, onUpdateSettings, chara
       setTimeout(() => simulateAiInteractions(newMomentId, newMomentContent), 3000);
       setNewMomentContent('');
       setMomentVisibility([]);
+  };
+
+  // Allow AI to trigger a moment post for itself
+  const handleAIForceMoment = (content: string, images?: string[]) => {
+      if (!activeChatId) return;
+      const charId = activeChatId;
+      const newMoment: Moment = {
+          id: Date.now().toString(),
+          authorId: charId,
+          content: content,
+          timestamp: Date.now(),
+          images: images,
+          likes: [],
+          comments: []
+      };
+      onUpdateCharacters(prev => prev.map(c => c.id === charId ? { ...c, moments: [newMoment, ...(c.moments || [])] } : c));
+      handleShowNotification(`${characters.find(c=>c.id === charId)?.remark} 发布了朋友圈`);
   };
 
   const handleLikeMoment = (moment: Moment & { isUser: boolean }, likerId: string = 'USER') => {
@@ -249,6 +267,7 @@ const WeChatApp: React.FC<WeChatAppProps> = ({ settings, onUpdateSettings, chara
             onUpdateCharacter={updateActiveCharacter} 
             onAddMessage={handleAddMessage} isGlobalGenerating={globalIsGenerating} setGlobalGenerating={setGlobalIsGenerating}
             onShowNotification={handleShowNotification}
+            onPostMoment={handleAIForceMoment}
         />
         <NotificationBubble />
       </div>
@@ -258,7 +277,7 @@ const WeChatApp: React.FC<WeChatAppProps> = ({ settings, onUpdateSettings, chara
   const renderContent = () => {
     if (isCreating) {
       return (
-        <div className="p-4 overflow-y-auto h-full pb-20 bg-gray-50">
+        <div className="p-4 overflow-y-auto h-full pb-20 bg-gray-50 no-scrollbar">
            <div className="flex items-center justify-between mb-4"><h2 className="text-xl font-bold">新建联系人</h2><button onClick={() => setIsCreating(false)} className="text-gray-500"><i className="fas fa-times"></i></button></div>
            <div className="space-y-4 bg-white p-4 rounded-xl shadow-sm">
              <div className="flex flex-col items-center mb-4"><div className="relative w-24 h-24 rounded-xl overflow-hidden bg-gray-200 border-2 border-dashed border-gray-400 mb-2 group">{newChar.avatar ? <img src={newChar.avatar} className="w-full h-full object-cover" /> : <div className="flex items-center justify-center h-full text-gray-400"><i className="fas fa-camera text-2xl"></i></div>}<input type="file" accept="image/*" onChange={handleAvatarUpload} className="absolute inset-0 opacity-0 cursor-pointer"/></div><span className="text-xs text-gray-500">点击设置头像</span></div>
@@ -275,14 +294,14 @@ const WeChatApp: React.FC<WeChatAppProps> = ({ settings, onUpdateSettings, chara
     if (activeTab === WeChatTab.CHATS) {
       const sortedChars = [...characters].sort((a, b) => { if (a.isPinned === b.isPinned) return 0; return a.isPinned ? -1 : 1; });
       return (
-        <div className="divide-y divide-gray-200">
+        <div className="h-full overflow-y-auto no-scrollbar divide-y divide-gray-200">
           {sortedChars.map(char => {
              const lastMsg = [...char.messages].filter(m => (!m.mode || m.mode === 'online') && m.mode !== 'offline' && m.mode !== 'theater' && !m.isHidden).pop();
              return (
-               <div key={char.id} onClick={() => setActiveChatId(char.id)} onContextMenu={(e) => { e.preventDefault(); setContextMenuCharId(char.id); }} onMouseDown={() => handleTouchStart(char.id)} onMouseUp={handleTouchEnd} onMouseLeave={handleTouchEnd} onTouchStart={() => handleTouchStart(char.id)} onTouchEnd={handleTouchEnd} className={`flex items-center p-3 active:bg-gray-100 cursor-pointer select-none ${char.isPinned ? 'bg-gray-50' : 'bg-white'}`}>
-                 <div className="relative pointer-events-none"><img src={char.avatar} className="w-12 h-12 rounded-lg object-cover mr-3 bg-gray-200" />{char.unread ? <div className="absolute -top-1 right-2 w-4 h-4 bg-red-500 rounded-full border-2 border-white"></div> : null}</div>
+               <div key={char.id} onClick={() => setActiveChatId(char.id)} onContextMenu={(e) => { e.preventDefault(); setContextMenuCharId(char.id); }} onMouseDown={() => handleTouchStart(char.id)} onMouseUp={handleTouchEnd} onMouseLeave={handleTouchEnd} onTouchStart={() => handleTouchStart(char.id)} onTouchEnd={handleTouchEnd} className={`flex items-center p-3 active:bg-gray-100 cursor-pointer select-none flex-shrink-0 ${char.isPinned ? 'bg-gray-50' : 'bg-white'}`}>
+                 <div className="relative pointer-events-none"><img src={char.avatar} className="w-12 h-12 rounded-lg object-cover mr-3 bg-gray-200 flex-shrink-0" />{char.unread ? <div className="absolute -top-1 right-2 w-4 h-4 bg-red-500 rounded-full border-2 border-white"></div> : null}</div>
                  <div className="flex-1 min-w-0 pointer-events-none">
-                   <div className="flex justify-between items-baseline mb-1"><h3 className="font-medium text-gray-900 truncate flex items-center gap-1">{char.remark}{char.isPinned && <i className="fas fa-thumbtack text-xs text-gray-400 rotate-45"></i>}</h3><span className="text-xs text-gray-400">{lastMsg ? new Date(lastMsg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : ''}</span></div>
+                   <div className="flex justify-between items-baseline mb-1"><h3 className="font-medium text-gray-900 truncate flex items-center gap-1">{char.remark}{char.isPinned && <i className="fas fa-thumbtack text-xs text-gray-400 rotate-45"></i>}</h3><span className="text-xs text-gray-400 flex-shrink-0">{lastMsg ? new Date(lastMsg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : ''}</span></div>
                    <p className="text-sm text-gray-500 truncate">{lastMsg ? (lastMsg.isRecalled ? '对方撤回了一条消息' : lastMsg.content) : '暂无消息'}</p>
                  </div>
                </div>
@@ -295,10 +314,10 @@ const WeChatApp: React.FC<WeChatAppProps> = ({ settings, onUpdateSettings, chara
 
     if (activeTab === WeChatTab.CONTACTS) {
        return (
-         <div className="p-0">
-            <div onClick={() => setIsCreating(true)} className="flex items-center p-3 border-b bg-white active:bg-gray-100 cursor-pointer"><div className="w-10 h-10 rounded bg-orange-400 flex items-center justify-center mr-3 text-white"><i className="fas fa-user-plus"></i></div><span className="font-medium">新的朋友 / 创建角色</span></div>
-            <div className="bg-gray-100 px-3 py-1 text-xs text-gray-500">星标朋友</div>
-            {characters.map(char => ( <div key={char.id} className="flex items-center p-3 border-b bg-white active:bg-gray-100 cursor-pointer select-none" onClick={() => setActiveChatId(char.id)} onContextMenu={(e) => { e.preventDefault(); setContextMenuCharId(char.id); }} onMouseDown={() => handleTouchStart(char.id)} onMouseUp={handleTouchEnd} onMouseLeave={handleTouchEnd} onTouchStart={() => handleTouchStart(char.id)} onTouchEnd={handleTouchEnd}><img src={char.avatar} className="w-10 h-10 rounded mr-3 object-cover pointer-events-none" /><span className="font-medium pointer-events-none">{char.remark}</span></div> ))}
+         <div className="h-full overflow-y-auto no-scrollbar p-0">
+            <div onClick={() => setIsCreating(true)} className="flex items-center p-3 border-b bg-white active:bg-gray-100 cursor-pointer flex-shrink-0"><div className="w-10 h-10 rounded bg-orange-400 flex items-center justify-center mr-3 text-white flex-shrink-0"><i className="fas fa-user-plus"></i></div><span className="font-medium">新的朋友 / 创建角色</span></div>
+            <div className="bg-gray-100 px-3 py-1 text-xs text-gray-500 flex-shrink-0">星标朋友</div>
+            {characters.map(char => ( <div key={char.id} className="flex items-center p-3 border-b bg-white active:bg-gray-100 cursor-pointer select-none flex-shrink-0" onClick={() => setActiveChatId(char.id)} onContextMenu={(e) => { e.preventDefault(); setContextMenuCharId(char.id); }} onMouseDown={() => handleTouchStart(char.id)} onMouseUp={handleTouchEnd} onMouseLeave={handleTouchEnd} onTouchStart={() => handleTouchStart(char.id)} onTouchEnd={handleTouchEnd}><img src={char.avatar} className="w-10 h-10 rounded mr-3 object-cover pointer-events-none flex-shrink-0" /><span className="font-medium pointer-events-none">{char.remark}</span></div> ))}
          </div>
        )
     }
@@ -349,7 +368,7 @@ const WeChatApp: React.FC<WeChatAppProps> = ({ settings, onUpdateSettings, chara
 
     if (activeTab === WeChatTab.ME) {
         return (
-            <div className="p-4 bg-gray-50 h-full overflow-y-auto">
+            <div className="p-4 bg-gray-50 h-full overflow-y-auto no-scrollbar">
                 <div className="bg-white p-6 rounded-xl shadow-sm space-y-6">
                     <div className="flex items-center justify-between border-b pb-4"><h2 className="font-bold text-xl text-gray-800">全局用户人设</h2>{isSavingPersona && <span className="text-[#07c160] text-sm font-bold animate-fade-in"><i className="fas fa-check"></i> 已保存</span>}</div>
                     <div className="flex flex-col items-center"><div className="relative w-24 h-24 group"><img src={tempGlobalPersona.avatar} className="w-full h-full rounded-full object-cover shadow-md border-4 border-white" /><div className="absolute inset-0 bg-black/40 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition cursor-pointer"><i className="fas fa-camera text-white"></i></div><input type="file" accept="image/*" onChange={handleGlobalAvatarUpload} className="absolute inset-0 opacity-0 cursor-pointer" /></div><p className="text-xs text-gray-400 mt-2">点击更换全局头像</p></div>
@@ -366,15 +385,18 @@ const WeChatApp: React.FC<WeChatAppProps> = ({ settings, onUpdateSettings, chara
 
   return (
     <div className="h-full bg-gray-100 flex flex-col text-black relative">
-      <div className="bg-[#ededed] p-3 border-b border-gray-300 flex justify-between items-end pb-2 sticky top-0 z-10">
+      <div className="bg-[#ededed] p-3 border-b border-gray-300 flex justify-between items-end pb-2 sticky top-0 z-10 shadow-sm">
          <div className="flex items-center gap-3">
              <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-200"><i className="fas fa-home text-gray-600"></i></button>
              <h1 className="font-bold text-lg ml-1">微信 {activeTab === WeChatTab.CHATS && (isCreating ? '(创建)' : `(${characters.length})`)}</h1>
          </div>
          <div className="flex gap-4 mr-2"><i className="fas fa-search text-gray-900"></i><i className="fas fa-plus-circle text-gray-900" onClick={() => {setActiveTab(WeChatTab.CONTACTS); setIsCreating(true)}}></i></div>
       </div>
-      <div className="flex-1 overflow-y-auto no-scrollbar relative">{renderContent()}</div>
-      <div className="bg-[#f7f7f7] border-t border-gray-300 flex justify-around py-2 pb-6 sm:pb-2">
+      
+      {/* Scrollable content container - now hidden overflow on parent, children handle scrolling */}
+      <div className="flex-1 overflow-hidden relative flex flex-col">{renderContent()}</div>
+      
+      <div className="bg-[#f7f7f7] border-t border-gray-300 flex justify-around py-2 pb-6 sm:pb-2 z-10 relative">
          {[{id: WeChatTab.CHATS, icon: 'comment', label: '微信'}, {id: WeChatTab.CONTACTS, icon: 'address-book', label: '通讯录'}, {id: WeChatTab.MOMENTS, icon: 'compass', label: '发现'}, {id: WeChatTab.ME, icon: 'user', label: '我'}].map(tab => (
            <button key={tab.id} onClick={() => {setActiveTab(tab.id as WeChatTab); setIsCreating(false); if(tab.id === WeChatTab.MOMENTS) setHasNewMoment(false);}} className={`relative flex flex-col items-center gap-0.5 ${activeTab === tab.id ? 'text-[#07c160]' : 'text-gray-900'}`}>
                <i className={`fas fa-${tab.icon} text-xl mb-0.5`}></i>
