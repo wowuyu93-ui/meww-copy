@@ -1,5 +1,4 @@
 
-
 import { GoogleGenAI } from "@google/genai";
 import { AppSettings } from '../types';
 
@@ -24,31 +23,29 @@ const fetchOpenAICompatible = async (
     const apiKey = settings.apiKey || process.env.API_KEY;
     if (!apiKey) throw new Error("API Key missing");
 
-    let baseUrl = settings.apiUrl || "https://api.openai.com";
-    // Normalize URL: Remove trailing slash
-    baseUrl = baseUrl.replace(/\/+$/, '');
-
-    let endpoint = baseUrl;
-    // Automatic path correction logic requested by user
-    if (!baseUrl.includes('/v1')) {
-        endpoint = `${baseUrl}/v1/chat/completions`;
-    } else if (baseUrl.endsWith('/v1')) {
-        endpoint = `${baseUrl}/chat/completions`;
-    } 
-    // If user provided a specific path inside /v1 (rare), we trust them, 
-    // but the above covers the 99% case of "https://api.example.com" -> "https://api.example.com/v1/chat/completions"
+    let endpoint = settings.apiUrl || "https://api.openai.com/v1/chat/completions";
+    
+    // Intelligent URL construction
+    if (!endpoint.includes('/chat/completions') && !endpoint.includes('generateContent')) {
+        // If it looks like a base URL (no specific endpoint path)
+        endpoint = endpoint.replace(/\/+$/, ''); // Remove trailing slash
+        if (endpoint.endsWith('/v1')) {
+            endpoint = `${endpoint}/chat/completions`;
+        } else {
+            endpoint = `${endpoint}/v1/chat/completions`;
+        }
+    }
 
     console.log("⚠️ SDK failed. Falling back to OpenAI Protocol:", endpoint);
 
     // Transform messages to OpenAI format
-    // 1. If system prompt exists, add it as the first message
     const openAIMessages = [];
     if (systemPrompt) {
         openAIMessages.push({ role: 'system', content: systemPrompt });
     }
-    // 2. Add rest of messages
+    
     messages.forEach(m => {
-        if (m.role === 'system') return; // Skip embedded system messages if any, we handled it above
+        if (m.role === 'system') return; 
         openAIMessages.push({
             role: m.role === 'model' ? 'assistant' : 'user',
             content: m.content
@@ -56,28 +53,34 @@ const fetchOpenAICompatible = async (
     });
 
     const body = {
-        model: settings.model || 'gpt-3.5-turbo', // Fallback model name if generic, but usually users put 'gemini-1.5-flash' here too
+        model: settings.model || 'gpt-3.5-turbo',
         messages: openAIMessages,
         stream: false,
         temperature: 0.7
     };
 
-    const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`
-        },
-        body: JSON.stringify(body)
-    });
+    try {
+        const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${apiKey}`
+            },
+            body: JSON.stringify(body)
+        });
 
-    if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(`Protocol Error: ${response.status}`);
+        if (!response.ok) {
+            const errText = await response.text();
+            console.error("OpenAI Fetch Error Body:", errText);
+            throw new Error(`Protocol Error: ${response.status} - ${errText.slice(0, 50)}`);
+        }
+
+        const data = await response.json();
+        return data.choices?.[0]?.message?.content || "";
+    } catch (e: any) {
+        console.error("Fetch failed details:", e);
+        throw e;
     }
-
-    const data = await response.json();
-    return data.choices?.[0]?.message?.content || "";
 };
 
 export const generateChatCompletion = async (
@@ -122,18 +125,16 @@ export const generateChatCompletion = async (
 
     } catch (googleError: any) {
         // 2. Fallback to OpenAI Compatible Fetch
-        // Only try if we have an API URL configured (implies custom proxy) or if we just want to try standard OpenAI endpoints
-        if (settings.apiUrl) {
+        if (settings.apiUrl || googleError.message.includes('Detected OpenAI')) {
             try {
                 return await fetchOpenAICompatible(messages, settings, systemContent);
             } catch (fallbackError: any) {
-                // If fallback also fails, throw a combined error or the original
                 console.error("Fallback also failed:", fallbackError);
-                throw new Error(`Connection Failed. Check network.`);
+                throw new Error(`Connection Failed: ${fallbackError.message || 'Check Network'}`);
             }
         }
         
-        throw new Error("Connection Failed.");
+        throw new Error("Connection Failed. Please check API Key and Settings.");
     }
 };
 
@@ -171,9 +172,10 @@ export const fetchModels = async (settings: AppSettings): Promise<string[]> => {
       let baseUrl = settings.apiUrl || "https://api.openai.com";
       baseUrl = baseUrl.replace(/\/+$/, '');
       let endpoint = baseUrl;
-      if (!baseUrl.includes('/v1')) endpoint = `${baseUrl}/v1/models`;
-      else if (baseUrl.endsWith('/v1')) endpoint = `${baseUrl}/models`;
-      else endpoint = `${baseUrl}/models`; // Assume path is correct
+      if (!baseUrl.includes('/models')) {
+          if (baseUrl.endsWith('/v1')) endpoint = `${baseUrl}/models`;
+          else endpoint = `${baseUrl}/v1/models`;
+      }
 
       console.log("Fetching models (OpenAI Protocol):", endpoint);
       const response = await fetch(endpoint, {

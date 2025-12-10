@@ -1,4 +1,5 @@
 
+
 import React, { useState, useEffect, useRef, Dispatch, SetStateAction } from 'react';
 import { Character, AppSettings, WeChatTab, Message, Moment, Comment } from '../../types';
 import { DEFAULT_SYSTEM_PROMPT, DEFAULT_OFFLINE_PROMPT, DEFAULT_OS_PROMPT, MOMENT_REPLY_PROMPT } from '../../constants';
@@ -21,6 +22,39 @@ interface NotificationState {
   message: string;
 }
 
+// --- Helper: Check if string is a URL or Base64 Image ---
+const isImageContent = (str: string) => {
+    if (!str) return false;
+    return str.startsWith('http') || str.startsWith('data:image') || str.startsWith('blob:');
+};
+
+const compressImage = (file: File, maxWidth = 600, quality = 0.5): Promise<string> => {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.readAsDataURL(file);
+        reader.onload = (event) => {
+            const img = new Image();
+            img.src = event.target?.result as string;
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                let width = img.width;
+                let height = img.height;
+                if (width > maxWidth) {
+                    height = Math.round((height * maxWidth) / width);
+                    width = maxWidth;
+                }
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext('2d');
+                ctx?.drawImage(img, 0, 0, width, height);
+                resolve(canvas.toDataURL('image/jpeg', quality));
+            };
+            img.onerror = (err) => reject(err);
+        };
+        reader.onerror = (err) => reject(err);
+    });
+};
+
 const WeChatApp: React.FC<WeChatAppProps> = ({ settings, onUpdateSettings, characters, onUpdateCharacters, onClose }) => {
   const [activeTab, setActiveTab] = useState<WeChatTab>(WeChatTab.CHATS);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
@@ -36,12 +70,19 @@ const WeChatApp: React.FC<WeChatAppProps> = ({ settings, onUpdateSettings, chara
   const [tempGlobalPersona, setTempGlobalPersona] = useState(settings.globalPersona);
   const [isSavingPersona, setIsSavingPersona] = useState(false);
   
-  // Moments
+  // Moments State
   const [isPostingMoment, setIsPostingMoment] = useState(false);
   const [newMomentContent, setNewMomentContent] = useState('');
+  const [newMomentImages, setNewMomentImages] = useState<string[]>([]);
   const [momentVisibility, setMomentVisibility] = useState<string[]>([]); 
   const [showVisibilitySelector, setShowVisibilitySelector] = useState(false);
   const [isRefreshingMoments, setIsRefreshingMoments] = useState(false);
+  
+  // Moments Interaction State
+  const [viewingPhotoDesc, setViewingPhotoDesc] = useState<string | null>(null);
+  const [viewingPhotoUrl, setViewingPhotoUrl] = useState<string | null>(null);
+  const [commentInput, setCommentInput] = useState<{momentId: string, isUserMoment: boolean} | null>(null);
+  const [commentText, setCommentText] = useState('');
   
   // Red Dot
   const [hasNewMoment, setHasNewMoment] = useState(false);
@@ -148,37 +189,75 @@ const WeChatApp: React.FC<WeChatAppProps> = ({ settings, onUpdateSettings, chara
       console.log(`Simulating interactions for ${userMomentId}, reactors: ${reactors.length}`);
 
       for (const char of reactors) {
-          if (Math.random() > 0.1) {
-              handleLikeMoment({ id: userMomentId, isUser: true } as any, char.id);
-          }
-          if (Math.random() > 0.3) {
-              try {
-                  const prompt = interpolatePrompt(MOMENT_REPLY_PROMPT, { ai_name: char.name, user_name: currentSettings.globalPersona.name, moment_content: content, user_comment: "（这是用户发的一条朋友圈，请以好友身份回复评论）" });
-                  const reply = await generateChatCompletion([{ role: 'user', content: prompt }], currentSettings);
-                  const newComment: Comment = { id: Date.now().toString() + char.id, authorId: char.id, authorName: char.remark, content: reply.replace(/^["']|["']$/g, ''), timestamp: Date.now(), isAi: true };
-                  onUpdateSettings(prev => ({ ...prev, globalPersona: { ...prev.globalPersona, moments: prev.globalPersona.moments.map(m => m.id === userMomentId ? { ...m, comments: [...m.comments, newComment] } : m) } }));
-                  setHasNewMoment(true);
-              } catch (e) { console.error("AI Comment Failed", e); }
-          }
+          // Delay interactions slightly for realism
+          setTimeout(async () => {
+              // 1. Like
+              if (Math.random() > 0.1) {
+                  handleLikeMoment({ id: userMomentId, isUser: true } as any, char.id);
+              }
+              // 2. Comment
+              if (Math.random() > 0.3) {
+                  try {
+                      const prompt = interpolatePrompt(MOMENT_REPLY_PROMPT, { ai_name: char.name, user_name: currentSettings.globalPersona.name, moment_content: content, user_comment: "（这是用户发的一条朋友圈，请以好友身份回复一条评论，简短自然）" });
+                      const reply = await generateChatCompletion([{ role: 'user', content: prompt }], currentSettings);
+                      const newComment: Comment = { id: Date.now().toString() + char.id, authorId: char.id, authorName: char.remark, content: reply.replace(/^["']|["']$/g, ''), timestamp: Date.now(), isAi: true };
+                      onUpdateSettings(prev => ({ ...prev, globalPersona: { ...prev.globalPersona, moments: prev.globalPersona.moments.map(m => m.id === userMomentId ? { ...m, comments: [...m.comments, newComment] } : m) } }));
+                      setHasNewMoment(true);
+                  } catch (e) { console.error("AI Comment Failed", e); }
+              }
+          }, Math.random() * 5000 + 1000);
       }
   };
 
   const handlePostMoment = () => {
-      if (!newMomentContent) return;
+      if (!newMomentContent && newMomentImages.length === 0) return;
       const newMomentId = Date.now().toString();
-      const newMoment: Moment = { id: newMomentId, authorId: 'USER', content: newMomentContent, timestamp: Date.now(), likes: [], comments: [], visibleTo: momentVisibility.length > 0 ? momentVisibility : undefined };
+      const newMoment: Moment = { 
+          id: newMomentId, 
+          authorId: 'USER', 
+          content: newMomentContent, 
+          timestamp: Date.now(), 
+          likes: [], 
+          comments: [], 
+          visibleTo: momentVisibility.length > 0 ? momentVisibility : undefined,
+          images: newMomentImages.length > 0 ? newMomentImages : undefined
+      };
+      
       onUpdateSettings(prev => ({ ...prev, globalPersona: { ...prev.globalPersona, moments: [newMoment, ...(prev.globalPersona.moments || [])] } }));
       setIsPostingMoment(false);
-      handleShowNotification("发布成功！好友可能会互动哦...");
-      setTimeout(() => simulateAiInteractions(newMomentId, newMomentContent), 3000);
+      handleShowNotification("发布成功！");
+      
+      // Simulate AI interaction
+      setTimeout(() => simulateAiInteractions(newMomentId, newMomentContent || '[图片]'), 3000);
+      
       setNewMomentContent('');
+      setNewMomentImages([]);
       setMomentVisibility([]);
+  };
+
+  const handleAddMomentImage = async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (file) {
+          try {
+              const compressed = await compressImage(file);
+              setNewMomentImages(prev => [...prev, compressed]);
+          } catch(e) { alert("图片处理失败"); }
+      }
+  };
+
+  const handleAddMomentImagined = () => {
+      const desc = prompt("请输入你想要描述的画面（意象）：");
+      if (desc) {
+          setNewMomentImages(prev => [...prev, desc]);
+      }
   };
 
   // Allow AI to trigger a moment post for itself
   const handleAIForceMoment = (content: string, images?: string[]) => {
       if (!activeChatId) return;
       const charId = activeChatId;
+      console.log("AI Posting Moment:", content, images);
+      
       const newMoment: Moment = {
           id: Date.now().toString(),
           authorId: charId,
@@ -188,8 +267,17 @@ const WeChatApp: React.FC<WeChatAppProps> = ({ settings, onUpdateSettings, chara
           likes: [],
           comments: []
       };
-      onUpdateCharacters(prev => prev.map(c => c.id === charId ? { ...c, moments: [newMoment, ...(c.moments || [])] } : c));
+      
+      // Update Characters
+      onUpdateCharacters(prev => prev.map(c => {
+          if (c.id === charId) {
+             return { ...c, moments: [newMoment, ...(c.moments || [])] };
+          }
+          return c;
+      }));
+      
       handleShowNotification(`${characters.find(c=>c.id === charId)?.remark} 发布了朋友圈`);
+      setHasNewMoment(true);
   };
 
   const handleLikeMoment = (moment: Moment & { isUser: boolean }, likerId: string = 'USER') => {
@@ -214,27 +302,59 @@ const WeChatApp: React.FC<WeChatAppProps> = ({ settings, onUpdateSettings, chara
       }
   };
 
-  const handleCommentMoment = async (moment: Moment & { isUser: boolean }) => {
-      const text = prompt("评论:");
-      if (!text) return;
-      const newComment: Comment = { id: Date.now().toString(), authorId: 'USER', authorName: settings.globalPersona.name, content: text, timestamp: Date.now() };
+  const submitComment = async () => {
+      if (!commentInput || !commentText) return;
+      const { momentId, isUserMoment } = commentInput;
+      
+      const newComment: Comment = { 
+          id: Date.now().toString(), 
+          authorId: 'USER', 
+          authorName: settings.globalPersona.name, 
+          content: commentText, 
+          timestamp: Date.now() 
+      };
 
-      if (moment.isUser) {
-          onUpdateSettings(prev => ({ ...prev, globalPersona: { ...prev.globalPersona, moments: prev.globalPersona.moments.map(m => m.id === moment.id ? { ...m, comments: [...m.comments, newComment] } : m) } }));
+      // 1. Add User Comment locally
+      if (isUserMoment) {
+          onUpdateSettings(prev => ({ ...prev, globalPersona: { ...prev.globalPersona, moments: prev.globalPersona.moments.map(m => m.id === momentId ? { ...m, comments: [...m.comments, newComment] } : m) } }));
       } else {
-          const char = characters.find(c => c.moments && c.moments.some(m => m.id === moment.id));
+          const char = characters.find(c => c.moments && c.moments.some(m => m.id === momentId));
           if (char) {
-              onUpdateCharacters(prev => prev.map(c => c.id === char.id ? { ...c, moments: c.moments.map(m => m.id === moment.id ? { ...m, comments: [...m.comments, newComment] } : m) } : c));
-              if (settings.apiKey) {
-                  const prompt = interpolatePrompt(MOMENT_REPLY_PROMPT, { ai_name: char.name, user_name: settings.globalPersona.name, moment_content: moment.content, user_comment: text });
+              const targetMoment = char.moments.find(m => m.id === momentId);
+              
+              onUpdateCharacters(prev => prev.map(c => c.id === char.id ? { ...c, moments: c.moments.map(m => m.id === momentId ? { ...m, comments: [...m.comments, newComment] } : m) } : c));
+              
+              // 2. Trigger AI Reply if commenting on AI's post
+              if (settings.apiKey && targetMoment) {
+                  const prompt = interpolatePrompt(MOMENT_REPLY_PROMPT, { 
+                      ai_name: char.name, 
+                      user_name: settings.globalPersona.name, 
+                      moment_content: targetMoment.content || '[图片]', 
+                      user_comment: commentText 
+                  });
+                  
                   try {
                       const reply = await generateChatCompletion([{ role: 'user', content: prompt }], settings);
-                      const aiComment: Comment = { id: (Date.now() + 1).toString(), authorId: char.id, authorName: char.remark, content: reply.replace(/^["']|["']$/g, ''), timestamp: Date.now() + 1000, isAi: true };
-                      onUpdateCharacters(prev => prev.map(c => c.id === char.id ? { ...c, moments: c.moments.map(m => m.id === moment.id ? { ...m, comments: [...m.comments, aiComment] } : m) } : c));
+                      const aiComment: Comment = { 
+                          id: (Date.now() + 1).toString(), 
+                          authorId: char.id, 
+                          authorName: char.remark, 
+                          content: reply.replace(/^["']|["']$/g, ''), 
+                          timestamp: Date.now() + 1000, 
+                          isAi: true 
+                      };
+                      
+                      setTimeout(() => {
+                          onUpdateCharacters(prev => prev.map(c => c.id === char.id ? { ...c, moments: c.moments.map(m => m.id === momentId ? { ...m, comments: [...m.comments, aiComment] } : m) } : c));
+                          setHasNewMoment(true);
+                      }, 2000);
                   } catch (e) { console.error("AI Comment Reply Failed", e); }
               }
           }
       }
+      
+      setCommentInput(null);
+      setCommentText('');
   };
 
   const handleRefreshMoments = () => { setIsRefreshingMoments(true); setTimeout(() => setIsRefreshingMoments(false), 1000); };
@@ -371,8 +491,9 @@ const WeChatApp: React.FC<WeChatAppProps> = ({ settings, onUpdateSettings, chara
     if (activeTab === WeChatTab.MOMENTS) {
         const moments = getAllMoments();
         return (
-            <div className="h-full relative bg-white">
-                <div className="absolute top-0 left-0 right-0 h-72 z-0">
+            <div className="h-full bg-white overflow-y-auto no-scrollbar relative">
+                {/* Header (Standard Flow) */}
+                <div className="relative h-72">
                     <div className="w-full h-full relative overflow-hidden bg-stone-900">
                         <img src="https://picsum.photos/800/400?grayscale" className="w-full h-full object-cover opacity-60 scale-110 blur-[2px]" />
                         <div className="absolute inset-0 bg-gradient-to-b from-transparent via-black/20 to-black/60"></div>
@@ -383,13 +504,14 @@ const WeChatApp: React.FC<WeChatAppProps> = ({ settings, onUpdateSettings, chara
                     </div>
                 </div>
                 
-                <div className="pt-80 pb-20 px-4 space-y-10 overflow-y-auto h-full no-scrollbar relative z-1">
-                    <div className="absolute top-4 right-4 z-20 flex gap-4">
+                {/* Content List */}
+                <div className="px-4 pb-24 pt-12 space-y-10 min-h-screen relative z-0">
+                    <div className="absolute top-[-50px] right-4 z-20 flex gap-4">
                         <button onClick={handleRefreshMoments} className={`w-10 h-10 bg-black/30 backdrop-blur-md rounded-full text-white flex items-center justify-center hover:bg-black/50 transition border border-white/20 shadow-lg ${isRefreshingMoments ? 'animate-spin' : ''}`}><i className="fas fa-sync-alt"></i></button>
                         <button onClick={() => setIsPostingMoment(true)} className="w-10 h-10 bg-black/30 backdrop-blur-md rounded-full text-white flex items-center justify-center hover:bg-black/50 transition border border-white/20 shadow-lg"><i className="fas fa-camera"></i></button>
                     </div>
                     
-                    {moments.length === 0 && <div className="text-center text-stone-400 mt-20 font-bold opacity-60">暂无朋友圈，快去发一条吧！</div>}
+                    {moments.length === 0 && <div className="text-center text-stone-400 mt-10 font-bold opacity-60">暂无朋友圈，快去发一条吧！</div>}
                     
                     {moments.map(moment => (
                         <div key={moment.id} className="flex gap-4 animate-fade-in group">
@@ -397,7 +519,22 @@ const WeChatApp: React.FC<WeChatAppProps> = ({ settings, onUpdateSettings, chara
                             <div className="flex-1 pb-6 border-b border-stone-100 group-last:border-0">
                                 <div className="font-bold text-stone-900 text-[15px] mb-1">{moment.name}</div>
                                 <div className="text-[15px] text-stone-800 leading-relaxed mb-3 whitespace-pre-wrap">{moment.content}</div>
-                                {moment.images && (<div className="grid grid-cols-3 gap-1 mb-3 max-w-[280px] rounded-lg overflow-hidden">{moment.images.map((img, i) => <img key={i} src={img} className="w-full h-full aspect-square object-cover bg-stone-100 hover:opacity-90 cursor-pointer" />)}</div>)}
+                                
+                                {moment.images && (
+                                    <div className={`grid gap-1 mb-3 ${moment.images.length === 1 ? 'grid-cols-1 max-w-[200px]' : 'grid-cols-3 max-w-[280px]'} rounded-lg overflow-hidden`}>
+                                        {moment.images.map((img, i) => (
+                                            isImageContent(img) ? (
+                                                <img key={i} src={img} onClick={() => setViewingPhotoUrl(img)} className="w-full h-full aspect-square object-cover bg-stone-100 hover:opacity-90 cursor-pointer" />
+                                            ) : (
+                                                <div key={i} onClick={() => setViewingPhotoDesc(img)} className="w-full aspect-square bg-gray-100 flex flex-col items-center justify-center cursor-pointer border border-gray-200 hover:bg-gray-200 transition">
+                                                    <i className="fas fa-font text-gray-400 mb-1"></i>
+                                                    <span className="text-[10px] text-gray-500 font-serif tracking-widest px-2 truncate w-full text-center">意象</span>
+                                                </div>
+                                            )
+                                        ))}
+                                    </div>
+                                )}
+
                                 <div className="flex justify-between items-center text-xs text-stone-400 mb-3">
                                     <span>{new Date(moment.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
                                     <button onClick={() => handleLikeMoment(moment)} className="bg-stone-50 px-3 py-1.5 rounded text-stone-900 hover:bg-stone-100 transition active:scale-95"><i className={`far fa-heart mr-1 ${moment.likes.includes('USER') ? 'font-bold text-red-600' : ''}`}></i> {moment.likes.length || '赞'}</button>
@@ -412,16 +549,106 @@ const WeChatApp: React.FC<WeChatAppProps> = ({ settings, onUpdateSettings, chara
                                     <div className="space-y-1">
                                         {moment.comments.map(c => (<div key={c.id} className=""><span className="text-stone-900 font-bold cursor-pointer hover:underline">{c.authorName}: </span><span className="text-stone-700">{c.content}</span></div>))}
                                     </div>
-                                    <button onClick={() => handleCommentMoment(moment)} className="text-xs text-stone-400 mt-2 hover:text-red-900 transition">写评论...</button>
+                                    <button onClick={() => setCommentInput({momentId: moment.id, isUserMoment: !!moment.isUser})} className="text-xs text-stone-400 mt-2 hover:text-red-900 transition">写评论...</button>
                                 </div>
                             </div>
                         </div>
                     ))}
                 </div>
+
+                {/* --- POST MOMENT MODAL --- */}
                 {isPostingMoment && (
                     <div className="absolute inset-0 bg-white z-50 animate-slide-up flex flex-col">
-                        <div className="p-4 flex justify-between items-center border-b bg-gray-50/50 backdrop-blur"><button onClick={() => setIsPostingMoment(false)} className="text-stone-600 font-bold">取消</button><button onClick={handlePostMoment} className={`px-4 py-1.5 rounded-lg bg-stone-900 text-white font-bold shadow-md shadow-stone-200 ${!newMomentContent ? 'opacity-50' : ''}`}>发表</button></div>
-                        <div className="p-6 flex-1"><textarea value={newMomentContent} onChange={e => setNewMomentContent(e.target.value)} className="w-full h-40 resize-none outline-none text-lg placeholder-stone-300" placeholder="这一刻的想法..."/><div className="border-t py-4 flex items-center justify-between cursor-pointer active:bg-gray-50 -mx-4 px-4" onClick={() => setShowVisibilitySelector(!showVisibilitySelector)}><div className="flex items-center gap-3 text-stone-800 font-bold"><i className="fas fa-user-friends text-stone-500"></i> 谁可以看</div><div className="flex items-center gap-2 text-stone-400 text-sm font-bold">{momentVisibility.length === 0 ? '公开' : `部分可见(${momentVisibility.length})`} <i className="fas fa-chevron-right"></i></div></div>{showVisibilitySelector && (<div className="bg-stone-50 p-2 rounded-xl mt-2 max-h-40 overflow-y-auto border border-stone-100 shadow-inner">{characters.map(c => (<div key={c.id} className="flex items-center gap-3 p-3 border-b border-stone-100 last:border-0 hover:bg-white rounded-lg transition cursor-pointer" onClick={() => { if (momentVisibility.includes(c.id)) setMomentVisibility(momentVisibility.filter(id => id !== c.id)); else setMomentVisibility([...momentVisibility, c.id]); }}><input type="checkbox" checked={momentVisibility.includes(c.id)} onChange={()=>{}} className="w-5 h-5 accent-green-500 pointer-events-none"/><img src={c.avatar} className="w-8 h-8 rounded-full object-cover" /><span className="text-sm font-bold text-stone-700">{c.remark}</span></div>))}</div>)}</div>
+                        <div className="p-4 flex justify-between items-center border-b bg-gray-50/50 backdrop-blur">
+                            <button onClick={() => setIsPostingMoment(false)} className="text-stone-600 font-bold">取消</button>
+                            <button onClick={handlePostMoment} className={`px-4 py-1.5 rounded-lg bg-stone-900 text-white font-bold shadow-md shadow-stone-200 ${(!newMomentContent && newMomentImages.length === 0) ? 'opacity-50' : ''}`}>发表</button>
+                        </div>
+                        <div className="p-6 flex-1 overflow-y-auto">
+                            <textarea value={newMomentContent} onChange={e => setNewMomentContent(e.target.value)} className="w-full h-32 resize-none outline-none text-lg placeholder-stone-300" placeholder="这一刻的想法..."/>
+                            
+                            {/* Image Previews */}
+                            <div className="flex flex-wrap gap-2 mb-4">
+                                {newMomentImages.map((img, idx) => (
+                                    <div key={idx} className="w-24 h-24 relative rounded-lg overflow-hidden border border-gray-200 group">
+                                        {isImageContent(img) ? (
+                                            <img src={img} className="w-full h-full object-cover" />
+                                        ) : (
+                                            <div className="w-full h-full bg-gray-100 flex flex-col items-center justify-center p-2 text-center"><span className="text-[10px] text-gray-500 font-serif line-clamp-3">{img}</span></div>
+                                        )}
+                                        <button onClick={() => setNewMomentImages(prev => prev.filter((_, i) => i !== idx))} className="absolute top-1 right-1 bg-black/50 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs"><i className="fas fa-times"></i></button>
+                                    </div>
+                                ))}
+                                {newMomentImages.length < 9 && (
+                                    <div className="flex flex-col gap-2">
+                                        <label className="w-24 h-24 bg-gray-50 rounded-lg flex flex-col items-center justify-center text-gray-400 cursor-pointer hover:bg-gray-100 border border-dashed border-gray-300">
+                                            <i className="fas fa-camera text-xl mb-1"></i>
+                                            <span className="text-[10px]">照片</span>
+                                            <input type="file" accept="image/*" onChange={handleAddMomentImage} className="hidden" />
+                                        </label>
+                                        <button onClick={handleAddMomentImagined} className="w-24 h-8 bg-gray-50 rounded-lg flex items-center justify-center text-gray-500 hover:bg-gray-100 border border-gray-200 text-xs font-bold gap-1">
+                                            <i className="fas fa-magic"></i> 意象
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+
+                            <div className="border-t py-4 flex items-center justify-between cursor-pointer active:bg-gray-50 -mx-4 px-4" onClick={() => setShowVisibilitySelector(!showVisibilitySelector)}>
+                                <div className="flex items-center gap-3 text-stone-800 font-bold"><i className="fas fa-user-friends text-stone-500"></i> 谁可以看</div>
+                                <div className="flex items-center gap-2 text-stone-400 text-sm font-bold">{momentVisibility.length === 0 ? '公开' : `部分可见(${momentVisibility.length})`} <i className="fas fa-chevron-right"></i></div>
+                            </div>
+                            
+                            {showVisibilitySelector && (
+                                <div className="bg-stone-50 p-2 rounded-xl mt-2 max-h-40 overflow-y-auto border border-stone-100 shadow-inner">
+                                    {characters.map(c => (
+                                        <div key={c.id} className="flex items-center gap-3 p-3 border-b border-stone-100 last:border-0 hover:bg-white rounded-lg transition cursor-pointer" onClick={() => { if (momentVisibility.includes(c.id)) setMomentVisibility(momentVisibility.filter(id => id !== c.id)); else setMomentVisibility([...momentVisibility, c.id]); }}>
+                                            <input type="checkbox" checked={momentVisibility.includes(c.id)} onChange={()=>{}} className="w-5 h-5 accent-green-500 pointer-events-none"/>
+                                            <img src={c.avatar} className="w-8 h-8 rounded-full object-cover" />
+                                            <span className="text-sm font-bold text-stone-700">{c.remark}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                )}
+
+                {/* --- COMMENT INPUT MODAL --- */}
+                {commentInput && (
+                    <div className="absolute inset-0 bg-black/20 z-[60] flex flex-col justify-end" onClick={() => setCommentInput(null)}>
+                        <div className="bg-gray-100 p-3 flex gap-2 items-center animate-slide-up" onClick={e => e.stopPropagation()}>
+                            <input 
+                                autoFocus 
+                                className="flex-1 bg-white rounded-lg px-4 py-2 text-sm focus:outline-none" 
+                                placeholder="评论..." 
+                                value={commentText} 
+                                onChange={e => setCommentText(e.target.value)}
+                                onKeyDown={e => { if(e.key === 'Enter') submitComment(); }}
+                            />
+                            <button onClick={submitComment} className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-bold disabled:opacity-50" disabled={!commentText.trim()}>发送</button>
+                        </div>
+                    </div>
+                )}
+
+                {/* --- PHOTO DESCRIPTION MODAL --- */}
+                {viewingPhotoDesc && (
+                    <div className="absolute inset-0 z-[70] bg-black/60 flex items-center justify-center p-8 animate-fade-in" onClick={() => setViewingPhotoDesc(null)}>
+                        <div className="bg-white w-full max-w-sm rounded-lg p-6 shadow-2xl relative animate-slide-up flex flex-col items-center text-center" onClick={e => e.stopPropagation()}>
+                            <div className="text-gray-400 text-3xl mb-4"><i className="fas fa-image"></i></div>
+                            <div className="font-serif text-[15px] leading-loose text-gray-800 whitespace-pre-wrap italic">
+                                “{viewingPhotoDesc}”
+                            </div>
+                            <div className="mt-6 pt-4 border-t w-full border-gray-100">
+                                <button onClick={() => setViewingPhotoDesc(null)} className="text-xs text-gray-400 font-sans tracking-widest">关闭照片</button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* --- REAL PHOTO VIEWER --- */}
+                {viewingPhotoUrl && (
+                    <div className="absolute inset-0 z-[70] bg-black flex items-center justify-center animate-fade-in" onClick={() => setViewingPhotoUrl(null)}>
+                        <img src={viewingPhotoUrl} className="max-w-full max-h-full object-contain" onClick={e => e.stopPropagation()}/>
+                        <button className="absolute top-4 right-4 text-white text-2xl drop-shadow-md"><i className="fas fa-times"></i></button>
                     </div>
                 )}
             </div>

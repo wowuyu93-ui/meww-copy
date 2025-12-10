@@ -1,4 +1,5 @@
 
+
 import React, { useState, useEffect, useRef, Dispatch, SetStateAction, useMemo } from 'react';
 import { Character, Message, AppSettings, Moment, Scenario, MemoryCard, StyleConfig } from '../../types';
 import { generateChatCompletion, interpolatePrompt } from '../../services/aiService';
@@ -17,10 +18,9 @@ interface ChatInterfaceProps {
 }
 
 type ViewMode = 'chat' | 'offline' | 'theater_list' | 'theater_room';
+type UserTool = 'LOCATION' | 'TRANSFER' | 'VOICE' | 'PHOTO' | null;
 
 // --- HELPER: Aggressive Image Compression ---
-// Reduced max width to 800 and quality to 0.6 to prevent "Black Screen" OOM errors
-// Updated: Further optimized to 600px/0.5 for safer mobile wallpaper performance
 const compressImage = (file: File, maxWidth = 600, quality = 0.5): Promise<string> => {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
@@ -144,6 +144,13 @@ const useLongPress = (callback: (e: any) => void, ms = 500) => {
   return { onMouseDown: start, onMouseUp: stop, onMouseLeave: stop, onTouchStart: start, onTouchEnd: stop };
 };
 
+interface ParsedAIResponse {
+    messages: Message[];
+    retracts: { id: string, delay: number }[];
+    transferAction?: 'received' | 'refunded';
+    moments: { content: string, images?: string[] }[];
+}
+
 const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBack, onUpdateCharacter, onAddMessage, isGlobalGenerating, setGlobalGenerating, onShowNotification, onPostMoment }) => {
   const [inputValue, setInputValue] = useState('');
   const [isTyping, setIsTyping] = useState(false);
@@ -164,6 +171,20 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
   const [editContent, setEditContent] = useState('');
   const [quotingMsg, setQuotingMsg] = useState<Message | null>(null);
   
+  // User Tool States
+  const [activeToolModal, setActiveToolModal] = useState<UserTool>(null);
+  const [toolData, setToolData] = useState({
+      location: '',
+      transferAmount: '',
+      transferNote: '大吉大利，万事如意',
+      voiceText: '',
+      photoDesc: '',
+      photoType: 'UPLOAD' as 'UPLOAD' | 'DESC'
+  });
+  
+  // Transfer Interaction State
+  const [transferActionMsg, setTransferActionMsg] = useState<Message | null>(null);
+
   // Lazy Loading State
   const [visibleLimit, setVisibleLimit] = useState(character.renderMessageLimit || 50);
 
@@ -173,6 +194,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
 
   // New state for Photo Description Modal
   const [photoDescription, setPhotoDescription] = useState<string | null>(null);
+  const [viewingImage, setViewingImage] = useState<string | null>(null); // For real images
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -203,6 +225,129 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
   const currentUserDesc = character.useLocalPersona ? character.userMaskDescription : settings.globalPersona.description;
 
   // --- Logic ---
+
+  const handleToolSend = async () => {
+      let newMessage: Message | null = null;
+      const baseMsg = {
+          id: Date.now().toString(),
+          role: 'user' as const,
+          timestamp: Date.now(),
+          mode: viewMode === 'offline' ? 'offline' as const : (viewMode === 'theater_room' ? 'theater' as const : 'online' as const),
+          scenarioId: activeScenarioId || undefined,
+      };
+
+      if (activeToolModal === 'LOCATION') {
+          if (!toolData.location) return;
+          newMessage = { ...baseMsg, content: toolData.location, msgType: 'location' };
+      } 
+      else if (activeToolModal === 'TRANSFER') {
+          const amount = parseFloat(toolData.transferAmount);
+          if (isNaN(amount) || amount <= 0) { alert('请输入有效金额'); return; }
+          newMessage = { 
+              ...baseMsg, 
+              content: toolData.transferNote, 
+              msgType: 'transfer', 
+              meta: { amount: amount, status: 'pending' } // Default pending
+          };
+      }
+      else if (activeToolModal === 'VOICE') {
+          if (!toolData.voiceText) return;
+          // Calculate roughly 3 chars per second, min 1 sec
+          const duration = Math.max(1, Math.ceil(toolData.voiceText.length / 3));
+          newMessage = {
+              ...baseMsg,
+              content: '[语音]',
+              msgType: 'voice',
+              meta: { textContent: toolData.voiceText, duration: duration }
+          };
+      }
+      else if (activeToolModal === 'PHOTO') {
+          // Photo is handled separately in tabs
+          if (toolData.photoType === 'DESC') {
+              if (!toolData.photoDesc) return;
+              newMessage = { ...baseMsg, content: toolData.photoDesc, msgType: 'image' };
+          }
+      }
+
+      if (newMessage) {
+          onAddMessage(character.id, newMessage);
+          
+          if (viewMode === 'theater_room' && activeScenario && !activeScenario.isConnected) {
+              // Handle Theater Isolated State
+              onUpdateCharacter(prev => {
+                const updatedScenarios = prev.scenarios?.map(s => s.id === activeScenarioId ? { ...s, messages: [...(s.messages || []), newMessage!] } : s) || [];
+                return { ...prev, scenarios: updatedScenarios };
+              });
+          }
+
+          setActiveToolModal(null);
+          setShowDrawer(false);
+          setToolData({ location: '', transferAmount: '', transferNote: '大吉大利，万事如意', voiceText: '', photoDesc: '', photoType: 'UPLOAD' });
+          
+          // NOTE: Removed fetchAIReply here. User must manually trigger AI or send another message.
+          // This allows "Stacking" messages.
+      }
+  };
+
+  const handleUserPhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (file) {
+          try {
+              const compressed = await compressImage(file, 600, 0.6);
+              const newMessage: Message = {
+                  id: Date.now().toString(),
+                  role: 'user',
+                  timestamp: Date.now(),
+                  mode: viewMode === 'offline' ? 'offline' : (viewMode === 'theater_room' ? 'theater' : 'online'),
+                  scenarioId: activeScenarioId || undefined,
+                  content: compressed, // Base64 string as content
+                  msgType: 'image'
+              };
+              
+              onAddMessage(character.id, newMessage);
+              
+              if (viewMode === 'theater_room' && activeScenario && !activeScenario.isConnected) {
+                  onUpdateCharacter(prev => {
+                    const updatedScenarios = prev.scenarios?.map(s => s.id === activeScenarioId ? { ...s, messages: [...(s.messages || []), newMessage] } : s) || [];
+                    return { ...prev, scenarios: updatedScenarios };
+                  });
+              }
+
+              setActiveToolModal(null);
+              setShowDrawer(false);
+              
+              // NOTE: Removed fetchAIReply here as well.
+
+          } catch (err) {
+              alert("图片处理失败");
+          }
+      }
+  };
+
+  const handleTransferStatusUpdate = (status: 'received' | 'refunded') => {
+      if (!transferActionMsg) return;
+
+      const updateLogic = (msgs: Message[]) => msgs.map(m => {
+          if (m.id === transferActionMsg.id) {
+              return { 
+                  ...m, 
+                  meta: { ...m.meta, status: status } 
+              };
+          }
+          return m;
+      });
+
+      if (viewMode === 'theater_room' && activeScenario && !activeScenario.isConnected) {
+          onUpdateCharacter(prev => ({ 
+              ...prev, 
+              scenarios: prev.scenarios?.map(s => s.id === activeScenarioId ? { ...s, messages: updateLogic(s.messages || []) } : s) 
+          }));
+      } else {
+          onUpdateCharacter(prev => ({ ...prev, messages: updateLogic(prev.messages) }));
+      }
+      
+      setTransferActionMsg(null);
+  };
 
   const handleCreateScenario = () => {
       if (!newScenario.title) return;
@@ -292,6 +437,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
             });
         } else {
             onAddMessage(character.id, newMessage);
+            // We must update our local state to pass the freshest data to fetchAIReply
             updatedCharForAI = { ...character, messages: [...character.messages, newMessage] }; 
         }
         setInputValue('');
@@ -302,6 +448,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
     if (getReply) {
       setIsTyping(true);
       setGlobalGenerating(true); 
+      // Use the updated char object which definitely contains the user's latest message
       try { await fetchAIReply(updatedCharForAI); } catch (e) { console.error(e); setIsTyping(false); setGlobalGenerating(false); }
     }
   };
@@ -342,14 +489,27 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
   };
 
   // --- NEW PARSER FOR TAGS v2 (Split Text Bubbles) ---
-  const parseAIResponseTags = (text: string, currentChar: Character): { messages: Message[], retracts: { id: string, delay: number }[] } => {
+  const parseAIResponseTags = (text: string, currentChar: Character): ParsedAIResponse => {
       const messages: Message[] = [];
       const retracts: { id: string, delay: number }[] = [];
+      const moments: { content: string, images?: string[] }[] = [];
       let accumulatedOS = '';
+      let transferAction: 'received' | 'refunded' | undefined = undefined;
 
       let cleanText = cleanMarkdown(text);
       
-      // 1. Extract and Remove INNER tags first
+      // 1. GLOBAL CHECK FOR TRANSFER TAGS (Before removing INNER)
+      if (/\[\s*ACCEPT_TRANSFER\s*\]/i.test(cleanText)) {
+          transferAction = 'received';
+      } else if (/\[\s*REFUSE_TRANSFER\s*\]/i.test(cleanText)) {
+          transferAction = 'refunded';
+      }
+
+      // Remove the tags from text so they don't show up in bubbles
+      cleanText = cleanText.replace(/\[\s*ACCEPT_TRANSFER\s*\]/i, '');
+      cleanText = cleanText.replace(/\[\s*REFUSE_TRANSFER\s*\]/i, '');
+      
+      // 2. Extract and Remove INNER tags
       const innerRegex = /\[INNER:([\s\S]*?)\]/gi;
       let match;
       while ((match = innerRegex.exec(cleanText)) !== null) {
@@ -357,9 +517,9 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
       }
       cleanText = cleanText.replace(innerRegex, '');
 
-      // 2. Split by Media Tags
+      // 3. Split by Media Tags
       // We look for [TAG: ...]
-      const tagRegex = /(\[(?:IMAGE|VOICE|TRANSFER|LOCATION|GOSSIP|RETRACT|VIDEO|PATS_YOU):[^\]]*\]|\[PATS_YOU\])/g;
+      const tagRegex = /(\[(?:IMAGE|VOICE|TRANSFER|LOCATION|GOSSIP|RETRACT|VIDEO|PATS_YOU|MOMENT):[^\]]*\]|\[PATS_YOU\])/g;
       const parts = cleanText.split(tagRegex);
       
       parts.forEach((part, index) => {
@@ -423,6 +583,10 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
                       msgBase.content = `${currentChar.remark} 拍了拍我`;
                       msgBase.msgType = 'nudge';
                       break;
+                  case 'MOMENT':
+                      // Capture moment data but DO NOT push to message list
+                      moments.push({ content: p1, images: p2 ? [p2] : undefined });
+                      return; // SKIP pushing this as a message
                   default:
                       msgBase.content = part; // Fallback
                       break;
@@ -453,7 +617,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
           messages[0].osContent = accumulatedOS;
       }
 
-      return { messages, retracts };
+      return { messages, retracts, transferAction, moments };
   };
 
   const fetchAIReply = async (currentChar: Character) => {
@@ -508,7 +672,21 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
 
     const processedHistory = history.filter(m => !m.isRecalled).map(m => {
         let finalContent = m.content;
-        if (m.quote) finalContent = `> 引用回复 "${m.quote.name}": ${m.quote.content}\n\n${m.content}`;
+        
+        // --- PROCESSED HISTORY FIX: Handle Rich Media Content in History ---
+        // If it is a real image (Base64), don't send the full string to AI to save tokens.
+        if (m.msgType === 'image' && m.content.startsWith('data:image')) {
+            finalContent = '[用户发送了一张图片]';
+        } else if (m.msgType === 'transfer') {
+            const statusStr = m.meta?.status ? `(状态:${m.meta.status})` : '';
+            finalContent = `[转账: ${m.meta?.amount}元${statusStr}] ${m.content}`;
+        } else if (m.msgType === 'location') {
+            finalContent = `[位置: ${m.content}]`;
+        } else if (m.msgType === 'voice') {
+            finalContent = `[语音消息: ${m.meta?.textContent || '...'}]`;
+        }
+
+        if (m.quote) finalContent = `> 引用回复 "${m.quote.name}": ${m.quote.content}\n\n${finalContent}`;
         if (m.isRecalled) finalContent = "[该消息已撤回]"; 
         
         return {
@@ -517,6 +695,13 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
         };
     });
 
+    // --- CHECK FOR PENDING TRANSFER & FORCE SYSTEM INJECTION ---
+    // Ensure we are checking the latest message list
+    const targetMsgs = (isTheater && currentScenario && !currentScenario.isConnected) ? currentScenario.messages : currentChar.messages;
+    const pendingTransfer = [...(targetMsgs || [])]
+        .reverse()
+        .find(m => m.role === 'user' && m.msgType === 'transfer' && (!m.meta?.status || m.meta.status === 'pending'));
+
     let tailInjection = null;
     if (isOffline) {
         tailInjection = { role: 'system', content: `[SYSTEM FORCE: OFFLINE MODE ACTIVE]\nFORBIDDEN: JSON format.\nREQUIRED: Novel/Script format. One single coherent response block. Output plain text ONLY.` };
@@ -524,10 +709,21 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
         tailInjection = { role: 'system', content: `[SYSTEM: THEATER MODE]\nRoleplay strictly. Output as one coherent block of text/script.` };
     } else {
         // Stronger Injection to prevent "Novel Style" leaking into Chat
-        tailInjection = { role: 'system', content: `[SYSTEM FORCE: ONLINE/WECHAT MODE ACTIVE]\n当前场景：手机微信聊天界面。\n强制要求：\n1. 严禁描写任何动作、神态、环境（如“笑了笑”、“拿起手机”等）。\n2. 仅输出气泡对话内容。\n3. 使用短句，口语化。\n4. 忽略之前可能存在的线下/剧场模式的描写惯性，立刻回到网聊状态。\n5. 不要输出任何 *斜体* 或 (括号) 里的动作描写。` };
+        tailInjection = { role: 'system', content: `[SYSTEM FORCE: ONLINE/WECHAT MODE ACTIVE]\n当前场景：手机微信聊天界面。\n强制要求：\n1. 严禁描写任何动作、神态、环境（如“笑了笑”、“拿起手机”等）。\n2. 仅输出气泡对话内容。\n3. 使用短句，口语化。\n4. 忽略之前可能存在的线下/剧场模式的描写惯性，立刻回到网聊状态。\n5. 不要输出任何 *斜体* 或 (括号) 里的动作描写。\n6. 严禁使用 [IMAGE] 发表情包，请用 emoji 代替。` };
     }
     
-    const apiMessages = [ { role: 'system', content: fullSystemPrompt }, ...processedHistory, ...(tailInjection ? [tailInjection] : []) ];
+    // Construct Messages
+    const apiMessages = [ { role: 'system', content: fullSystemPrompt }, ...processedHistory ];
+    
+    if (tailInjection) apiMessages.push(tailInjection);
+
+    // *** CRITICAL TRANSFER INJECTION ***
+    if (pendingTransfer) {
+        apiMessages.push({
+            role: 'system',
+            content: `[系统强制指令] 检测到用户刚才给你发了转账(金额: ${pendingTransfer.meta?.amount})。你必须在本次回复中决定：\n1. 包含 [ACCEPT_TRANSFER] 表示收款。\n2. 包含 [REFUSE_TRANSFER] 表示退回。\n不要忽略这个操作。`
+        });
+    }
     
     try {
         const rawResponse = await generateChatCompletion(apiMessages, settings);
@@ -559,6 +755,47 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
             const result = parseAIResponseTags(cleanResponse, currentChar);
             messagesToAdd.push(...result.messages);
             messagesToRetract.push(...result.retracts);
+
+            // Handle Moments
+            if (result.moments && result.moments.length > 0 && onPostMoment) {
+                // Post detected moments
+                result.moments.forEach(m => {
+                    onPostMoment(m.content, m.images);
+                });
+            }
+
+            // Handle Transfer Action (AI accepted/refused user money)
+            if (result.transferAction) {
+                const action = result.transferAction;
+                // Find the latest pending transfer from USER
+                // We must use the message list from the PASSED currentChar which is the freshest state
+                // Re-fetch targetMsgs here to be safe
+                const latestTargetMsgs = (isTheater && currentScenario && !currentScenario.isConnected) ? currentScenario.messages : currentChar.messages;
+                
+                if (latestTargetMsgs) {
+                    const foundPendingTransfer = [...latestTargetMsgs].reverse().find(m => m.role === 'user' && m.msgType === 'transfer' && (!m.meta?.status || m.meta.status === 'pending'));
+                    
+                    if (foundPendingTransfer) {
+                        const updateTransferStatus = (msgs: Message[]) => msgs.map(m => {
+                            if (m.id === foundPendingTransfer.id) {
+                                // Create a fresh object to force re-render
+                                return { ...m, meta: { ...m.meta, status: action } };
+                            }
+                            return m;
+                        });
+
+                        // Apply update immediately
+                        if (isTheater && currentScenario && !currentScenario.isConnected) {
+                            onUpdateCharacter(prev => ({ 
+                                ...prev, 
+                                scenarios: prev.scenarios?.map(s => s.id === activeScenarioId ? { ...s, messages: updateTransferStatus(s.messages || []) } : s) 
+                            }));
+                        } else {
+                            onUpdateCharacter(prev => ({ ...prev, messages: updateTransferStatus(prev.messages) }));
+                        }
+                    }
+                }
+            }
 
             if (messagesToAdd.length === 0) {
                  console.log("AI generated empty content, suppressing.");
@@ -608,7 +845,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
 
     } catch (e: any) {
         console.error(e);
-        if (onShowNotification) onShowNotification("❌ 连接中断");
+        if (onShowNotification) onShowNotification("❌ " + e.message);
         setIsTyping(false);
     }
     setGlobalGenerating(false);
@@ -682,6 +919,21 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
       )}
       {showClearHistoryModal && (<div className="absolute inset-0 z-50 bg-black/50 flex items-center justify-center p-6"><div className="bg-white w-full max-w-sm rounded-xl p-6 shadow-2xl animate-fade-in"><h3 className="text-gray-900 font-bold text-lg mb-4">清空确认</h3><div className="flex flex-col gap-2"><button onClick={() => confirmClearHistory(false)} className="w-full py-3 bg-red-50 text-red-900 font-bold rounded-lg hover:bg-red-100">仅清空聊天记录</button><button onClick={() => confirmClearHistory(true)} className="w-full py-3 bg-red-900 text-white font-bold rounded-lg">完全重置</button><button onClick={() => setShowClearHistoryModal(false)} className="w-full py-3 text-gray-500 font-bold">取消</button></div></div></div>)}
       
+      {/* Transfer Action Modal - RESTRICTED TO MODEL MESSAGES */}
+      {transferActionMsg && (
+          <div className="absolute inset-0 z-50 bg-black/50 flex items-center justify-center p-6" onClick={() => setTransferActionMsg(null)}>
+              <div className="bg-white w-full max-w-xs rounded-xl p-6 shadow-2xl animate-slide-up relative text-center" onClick={e => e.stopPropagation()}>
+                  <div className="w-14 h-14 bg-orange-100 text-orange-500 rounded-full flex items-center justify-center mx-auto mb-4 text-2xl"><i className="fas fa-yen-sign"></i></div>
+                  <h3 className="text-gray-900 font-bold text-lg mb-1">交易操作</h3>
+                  <p className="text-gray-500 text-xs mb-6">¥{Number(transferActionMsg.meta?.amount).toFixed(2)} - {transferActionMsg.content}</p>
+                  <div className="flex flex-col gap-3">
+                      <button onClick={() => handleTransferStatusUpdate('received')} className="w-full py-3 bg-[#07c160] text-white rounded-xl font-bold hover:opacity-90">确认收款</button>
+                      <button onClick={() => handleTransferStatusUpdate('refunded')} className="w-full py-3 bg-red-50 text-red-600 rounded-xl font-bold hover:bg-red-100">立即退款</button>
+                  </div>
+              </div>
+          </div>
+      )}
+      
       {/* Inner Monologue Modal with Dark Mode Toggle */}
       {activeInnerContent && (
         <div className="absolute inset-0 z-50 bg-black/60 flex items-center justify-center p-8 animate-fade-in" onClick={() => setActiveInnerContent(null)}>
@@ -723,8 +975,71 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
         </div>
       )}
 
+      {/* Real Image Viewer Modal */}
+      {viewingImage && (
+        <div className="absolute inset-0 z-50 bg-black flex items-center justify-center animate-fade-in" onClick={() => setViewingImage(null)}>
+            <img src={viewingImage} className="max-w-full max-h-full object-contain" onClick={e => e.stopPropagation()}/>
+            <button className="absolute top-4 right-4 text-white text-2xl drop-shadow-md"><i className="fas fa-times"></i></button>
+        </div>
+      )}
+
       {showOSModal && (<div className="absolute inset-0 z-50 bg-black/50 flex items-center justify-center p-6"><div className="bg-white w-full max-w-sm rounded-xl p-6 shadow-2xl relative animate-slide-up"><button onClick={() => setShowOSModal(false)} className="absolute top-2 right-2 text-gray-400 w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100"><i className="fas fa-times"></i></button><h3 className="font-bold text-stone-800 mb-4 flex items-center gap-2">内心独白 (OS)</h3><div className="bg-stone-50 p-3 rounded-lg mb-4 flex items-center justify-between"><div><div className="font-bold text-stone-900 text-sm">OS 开关</div></div><label className="relative inline-flex items-center cursor-pointer"><input type="checkbox" className="sr-only peer" checked={character.showOS || false} onChange={(e) => onUpdateCharacter(prev => ({...prev, showOS: e.target.checked}))}/><div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-stone-800"></div></label></div><textarea className="w-full h-32 p-2 border border-gray-200 rounded text-xs bg-gray-50 focus:outline-none focus:border-stone-500 font-mono text-gray-600" value={character.osSystemPrompt || DEFAULT_OS_PROMPT} onChange={(e) => onUpdateCharacter(prev => ({...prev, osSystemPrompt: e.target.value}))}/></div></div>)}
       {editingMsgId && (<div className="absolute inset-0 z-50 bg-black/50 flex items-center justify-center p-4"><div className="bg-white w-full max-w-sm rounded-xl p-4 shadow-2xl animate-slide-up"><h3 className="font-bold mb-2 text-gray-700">编辑消息</h3><textarea value={editContent} onChange={e => setEditContent(e.target.value)} className="w-full h-32 border p-2 rounded mb-4 focus:outline-none focus:border-stone-500 resize-none bg-gray-50"/><div className="flex gap-3"><button onClick={() => setEditingMsgId(null)} className="flex-1 py-2 bg-gray-100 text-gray-600 rounded font-bold">取消</button><button onClick={confirmEdit} className="flex-1 py-2 bg-stone-900 text-white rounded font-bold">保存</button></div></div></div>)}
+      
+      {/* --- User Tools Modals --- */}
+      {activeToolModal === 'LOCATION' && (
+          <div className="absolute inset-0 z-50 bg-black/50 flex items-center justify-center p-6" onClick={() => setActiveToolModal(null)}>
+              <div className="bg-white w-full max-w-xs rounded-xl p-6 shadow-2xl animate-slide-up relative" onClick={e => e.stopPropagation()}>
+                  <h3 className="text-gray-900 font-bold mb-4 flex items-center gap-2"><i className="fas fa-map-marker-alt text-red-500"></i> 发送位置</h3>
+                  <input autoFocus value={toolData.location} onChange={e => setToolData({...toolData, location: e.target.value})} placeholder="输入地点名称..." className="w-full p-2 bg-gray-100 rounded border border-gray-200 mb-4 focus:outline-none focus:border-red-500"/>
+                  <button onClick={handleToolSend} className="w-full py-2 bg-green-600 text-white rounded font-bold hover:bg-green-700">发送</button>
+              </div>
+          </div>
+      )}
+      {activeToolModal === 'TRANSFER' && (
+          <div className="absolute inset-0 z-50 bg-black/50 flex items-center justify-center p-6" onClick={() => setActiveToolModal(null)}>
+              <div className="bg-white w-full max-w-xs rounded-xl p-6 shadow-2xl animate-slide-up relative" onClick={e => e.stopPropagation()}>
+                  <h3 className="text-gray-900 font-bold mb-4 flex items-center gap-2"><i className="fas fa-yen-sign text-orange-500"></i> 发起转账</h3>
+                  <div className="mb-2"><label className="text-xs text-gray-500 font-bold">金额</label><input type="number" value={toolData.transferAmount} onChange={e => setToolData({...toolData, transferAmount: e.target.value})} placeholder="0.00" className="w-full p-2 bg-gray-100 rounded border border-gray-200 focus:outline-none focus:border-orange-500"/></div>
+                  <div className="mb-4"><label className="text-xs text-gray-500 font-bold">转账备注</label><input value={toolData.transferNote} onChange={e => setToolData({...toolData, transferNote: e.target.value})} placeholder="大吉大利" className="w-full p-2 bg-gray-100 rounded border border-gray-200 focus:outline-none focus:border-orange-500"/></div>
+                  <button onClick={handleToolSend} className="w-full py-2 bg-green-600 text-white rounded font-bold hover:bg-green-700">确认转账</button>
+              </div>
+          </div>
+      )}
+      {activeToolModal === 'VOICE' && (
+          <div className="absolute inset-0 z-50 bg-black/50 flex items-center justify-center p-6" onClick={() => setActiveToolModal(null)}>
+              <div className="bg-white w-full max-w-xs rounded-xl p-6 shadow-2xl animate-slide-up relative" onClick={e => e.stopPropagation()}>
+                  <h3 className="text-gray-900 font-bold mb-4 flex items-center gap-2"><i className="fas fa-microphone text-green-500"></i> 模拟语音消息</h3>
+                  <textarea autoFocus value={toolData.voiceText} onChange={e => setToolData({...toolData, voiceText: e.target.value})} placeholder="输入语音内容，将自动计算时长..." className="w-full p-2 h-24 bg-gray-100 rounded border border-gray-200 mb-4 focus:outline-none focus:border-green-500 resize-none"/>
+                  <div className="text-xs text-gray-400 mb-4 text-right">预计时长: {Math.max(1, Math.ceil(toolData.voiceText.length / 3))} 秒</div>
+                  <button onClick={handleToolSend} className="w-full py-2 bg-green-600 text-white rounded font-bold hover:bg-green-700">发送语音</button>
+              </div>
+          </div>
+      )}
+      {activeToolModal === 'PHOTO' && (
+          <div className="absolute inset-0 z-50 bg-black/50 flex items-center justify-center p-6" onClick={() => setActiveToolModal(null)}>
+              <div className="bg-white w-full max-w-xs rounded-xl p-6 shadow-2xl animate-slide-up relative" onClick={e => e.stopPropagation()}>
+                  <h3 className="text-gray-900 font-bold mb-4 flex items-center gap-2"><i className="fas fa-image text-blue-500"></i> 发送图片</h3>
+                  <div className="flex mb-4 bg-gray-100 p-1 rounded-lg">
+                      <button onClick={() => setToolData({...toolData, photoType: 'UPLOAD'})} className={`flex-1 py-1 rounded text-xs font-bold transition ${toolData.photoType === 'UPLOAD' ? 'bg-white shadow text-black' : 'text-gray-500'}`}>本地相册</button>
+                      <button onClick={() => setToolData({...toolData, photoType: 'DESC'})} className={`flex-1 py-1 rounded text-xs font-bold transition ${toolData.photoType === 'DESC' ? 'bg-white shadow text-black' : 'text-gray-500'}`}>照片意象</button>
+                  </div>
+                  {toolData.photoType === 'UPLOAD' ? (
+                      <div className="border-2 border-dashed border-gray-300 rounded-lg h-32 flex flex-col items-center justify-center bg-gray-50 hover:bg-gray-100 relative cursor-pointer">
+                          <i className="fas fa-cloud-upload-alt text-2xl text-gray-400 mb-2"></i>
+                          <span className="text-xs text-gray-500">点击上传本地图片</span>
+                          <input type="file" accept="image/*" className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleUserPhotoUpload} />
+                      </div>
+                  ) : (
+                      <div className="space-y-2">
+                          <textarea autoFocus value={toolData.photoDesc} onChange={e => setToolData({...toolData, photoDesc: e.target.value})} placeholder="例如: 一只在阳光下睡觉的猫..." className="w-full p-2 h-24 bg-gray-100 rounded border border-gray-200 focus:outline-none focus:border-blue-500 resize-none"/>
+                          <button onClick={handleToolSend} className="w-full py-2 bg-green-600 text-white rounded font-bold hover:bg-green-700">发送意象</button>
+                      </div>
+                  )}
+              </div>
+          </div>
+      )}
+
       {showMemoryFurnace && (
         <div className="absolute inset-0 bg-black/50 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 animate-fade-in">
             <div className="bg-[#f2f2f2] w-full h-[90%] sm:h-[650px] sm:rounded-2xl rounded-t-2xl flex flex-col shadow-2xl animate-slide-up">
@@ -838,20 +1153,56 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
       
       // 2. Transfer (Red Packet)
       if (msg.msgType === 'transfer') {
+          const status = msg.meta?.status || 'pending';
+          // Styling Logic
+          let bgColor = 'bg-[#fa9d3b]';
+          let textColor = 'text-white';
+          let icon = 'fa-yen-sign';
+          let iconBg = 'border-2 border-white/30';
+          let subText = '微信转账';
+          let statusElement = null;
+
+          if (status === 'received') {
+              bgColor = 'bg-[#f7e8d5]'; // Lighter gray/beige for received
+              textColor = 'text-gray-400';
+              icon = 'fa-check';
+              iconBg = 'border-none';
+              subText = '已收款';
+          } else if (status === 'refunded') {
+              bgColor = 'bg-[#ea5f5f]'; // Red for refunded
+              textColor = 'text-white';
+              icon = 'fa-undo';
+              subText = '已退还';
+              statusElement = <span className="absolute top-2 right-2 text-[10px] bg-white/20 px-2 py-0.5 rounded font-bold">已退还</span>;
+          }
+
           return (
-              <div className="bg-[#fa9d3b] p-0 rounded-[18px] w-60 overflow-hidden flex flex-col shadow-sm cursor-pointer active:brightness-95 transition">
-                  <div className="p-4 flex items-center gap-4 text-white">
-                      <div className="w-10 h-10 border-2 border-white/30 rounded-full flex items-center justify-center">
-                          <i className="fas fa-yen-sign text-xl"></i>
+              <div 
+                onClick={() => msg.role === 'model' && setTransferActionMsg(msg)} 
+                className={`${bgColor} p-0 rounded-[18px] w-60 overflow-hidden flex flex-col shadow-sm cursor-pointer active:brightness-95 transition relative`}
+                style={{ cursor: msg.role === 'user' ? 'default' : 'pointer' }}
+              >
+                  {statusElement}
+                  <div className={`p-4 flex items-center gap-4 ${textColor}`}>
+                      <div className={`w-10 h-10 ${iconBg} rounded-full flex items-center justify-center`}>
+                          <i className={`fas ${icon} text-xl`}></i>
                       </div>
                       <div className="flex flex-col">
-                          <span className="font-bold text-base">¥{Number(msg.meta?.amount).toFixed(2)}</span>
-                          <span className="text-xs opacity-90">{msg.content}</span>
+                          {status === 'received' ? (
+                               <span className="font-bold text-base">已收款</span>
+                          ) : (
+                               <>
+                                <span className="font-bold text-base">¥{Number(msg.meta?.amount).toFixed(2)}</span>
+                                <span className="text-xs opacity-90">{msg.content}{status === 'pending' && <span className="ml-1 opacity-70 text-[10px]">(等待确认)</span>}</span>
+                               </>
+                          )}
                       </div>
                   </div>
-                  <div className="bg-white/10 p-1 px-3 text-[10px] text-white/70">
-                      微信转账
+                  <div className="bg-black/5 p-1 px-3 text-[10px] text-black/40">
+                      {subText}
                   </div>
+                  {/* Overlay for received state to make it look disabled */}
+                  {status === 'received' && <div className="absolute inset-0 bg-white/40 pointer-events-none"></div>}
               </div>
           );
       }
@@ -872,6 +1223,15 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
 
       // 4. Image Placeholder (New Design)
       if (msg.msgType === 'image') {
+          // If content is Base64, render actual image
+          if (msg.content.startsWith('data:image')) {
+              return (
+                  <div onClick={() => setViewingImage(msg.content)} className="cursor-pointer">
+                      <img src={msg.content} className="max-w-[200px] max-h-[300px] rounded-lg border border-gray-200" />
+                  </div>
+              );
+          }
+          // Otherwise render placeholder
           return (
               <div 
                 onClick={() => setPhotoDescription(msg.content)}
@@ -1112,7 +1472,31 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
             </div>
         </div>
         {showDrawer && (
-            <div className="grid grid-cols-4 gap-6 p-6 bg-[#f7f7f7] border-t border-gray-200 animate-slide-up h-[220px]">
+            <div className="grid grid-cols-4 gap-6 p-6 bg-[#f7f7f7] border-t border-gray-200 animate-slide-up h-[220px] overflow-y-auto">
+                 <button onClick={() => setActiveToolModal('PHOTO')} className="flex flex-col items-center gap-2 group">
+                     <div className="w-14 h-14 bg-white rounded-2xl flex items-center justify-center shadow-lg shadow-gray-200 group-active:scale-95 transition border border-gray-100">
+                         <i className="fas fa-image text-2xl text-stone-700"></i>
+                     </div>
+                     <span className="text-[10px] font-bold text-stone-600">照片</span>
+                 </button>
+                 <button onClick={() => setActiveToolModal('LOCATION')} className="flex flex-col items-center gap-2 group">
+                     <div className="w-14 h-14 bg-white rounded-2xl flex items-center justify-center shadow-lg shadow-gray-200 group-active:scale-95 transition border border-gray-100">
+                         <i className="fas fa-map-marker-alt text-2xl text-stone-700"></i>
+                     </div>
+                     <span className="text-[10px] font-bold text-stone-600">位置</span>
+                 </button>
+                 <button onClick={() => setActiveToolModal('TRANSFER')} className="flex flex-col items-center gap-2 group">
+                     <div className="w-14 h-14 bg-white rounded-2xl flex items-center justify-center shadow-lg shadow-gray-200 group-active:scale-95 transition border border-gray-100">
+                         <i className="fas fa-yen-sign text-2xl text-stone-700"></i>
+                     </div>
+                     <span className="text-[10px] font-bold text-stone-600">转账</span>
+                 </button>
+                 <button onClick={() => setActiveToolModal('VOICE')} className="flex flex-col items-center gap-2 group">
+                     <div className="w-14 h-14 bg-white rounded-2xl flex items-center justify-center shadow-lg shadow-gray-200 group-active:scale-95 transition border border-gray-100">
+                         <i className="fas fa-microphone text-2xl text-stone-700"></i>
+                     </div>
+                     <span className="text-[10px] font-bold text-stone-600">语音</span>
+                 </button>
                  <button onClick={() => setShowCharSettings(true)} className="flex flex-col items-center gap-2 group">
                      <div className="w-14 h-14 bg-stone-900 rounded-2xl flex items-center justify-center text-white shadow-lg shadow-stone-200 group-active:scale-95 transition border border-stone-700 hover:bg-red-900">
                          <i className="fas fa-user-cog text-xl"></i>
@@ -1201,6 +1585,21 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ character, settings, onBa
                   <div className="bg-white p-4 rounded-xl shadow-sm"><h4 className="font-bold text-gray-700 mb-2">角色人设 (Personality)</h4><textarea value={tempCharConfig.personality} onChange={e => setTempCharConfig({...tempCharConfig, personality: e.target.value})} className="w-full h-32 p-2 text-xs border border-gray-200 rounded focus:outline-none focus:border-stone-500 resize-none bg-gray-50" placeholder="在此设定角色的性格、语气、口癖等..." /></div>
                   <div className="bg-white p-4 rounded-xl shadow-sm"><h4 className="font-bold text-gray-700 mb-2">System Prompt</h4><textarea value={tempCharConfig.systemPrompt} onChange={e => setTempCharConfig({...tempCharConfig, systemPrompt: e.target.value})} className="w-full h-40 p-2 text-[10px] font-mono bg-gray-900 text-stone-200 rounded focus:outline-none"/></div>
                   <div className="bg-red-50 p-4 rounded-xl shadow-sm border border-red-100 mt-4"><h4 className="font-bold text-red-900 mb-2">危险区域</h4><button onClick={() => setShowClearHistoryModal(true)} className="w-full py-2 bg-white border border-red-200 text-red-900 rounded font-bold text-sm shadow-sm hover:bg-red-50 active:bg-red-100 transition"><i className="fas fa-trash-alt mr-2"></i> 清空该角色聊天记录</button></div>
+              </div>
+          </div>
+      )}
+      
+      {/* Transfer Action Modal - RESTRICTED TO MODEL MESSAGES */}
+      {transferActionMsg && (
+          <div className="absolute inset-0 z-50 bg-black/50 flex items-center justify-center p-6" onClick={() => setTransferActionMsg(null)}>
+              <div className="bg-white w-full max-w-xs rounded-xl p-6 shadow-2xl animate-slide-up relative text-center" onClick={e => e.stopPropagation()}>
+                  <div className="w-14 h-14 bg-orange-100 text-orange-500 rounded-full flex items-center justify-center mx-auto mb-4 text-2xl"><i className="fas fa-yen-sign"></i></div>
+                  <h3 className="text-gray-900 font-bold text-lg mb-1">交易操作</h3>
+                  <p className="text-gray-500 text-xs mb-6">¥{Number(transferActionMsg.meta?.amount).toFixed(2)} - {transferActionMsg.content}</p>
+                  <div className="flex flex-col gap-3">
+                      <button onClick={() => handleTransferStatusUpdate('received')} className="w-full py-3 bg-[#07c160] text-white rounded-xl font-bold hover:opacity-90">确认收款</button>
+                      <button onClick={() => handleTransferStatusUpdate('refunded')} className="w-full py-3 bg-red-50 text-red-600 rounded-xl font-bold hover:bg-red-100">立即退款</button>
+                  </div>
               </div>
           </div>
       )}
