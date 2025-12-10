@@ -1,5 +1,4 @@
 
-
 export const DEFAULT_WALLPAPER = "https://picsum.photos/id/29/400/800";
 
 export const DEFAULT_SYSTEM_PROMPT = `**【角色扮演指令】**
@@ -92,19 +91,21 @@ export const PEEK_PROMPT = `你偷偷看了用户的日记。写一段内心独�
 export const OFFLINE_LOADING_COLORS = [
     { name: 'Amber', value: '#f59e0b' },
     { name: 'White', value: '#ffffff' },
-    { name: 'Red', value: '#ef4444' },
-    { name: 'Pink', value: '#ec4899' },
-    { name: 'Purple', value: '#a855f7' },
-    { name: 'Blue', value: '#3b82f6' },
-    { name: 'Cyan', value: '#06b6d4' },
-    { name: 'Green', value: '#22c55e' },
-    { name: 'Gray', value: '#9ca3af' },
-    { name: 'Zinc', value: '#52525b' },
+    { name: 'Red', value: '#991b1b' },
+    { name: 'Pink', value: '#be185d' },
+    { name: 'Purple', value: '#7e22ce' },
+    { name: 'Blue', value: '#1d4ed8' },
+    { name: 'Cyan', value: '#0e7490' },
+    { name: 'Green', value: '#15803d' },
+    { name: 'Gray', value: '#374151' },
+    { name: 'Zinc', value: '#18181b' },
 ];
 
 export const DEFAULT_STYLE_CONFIG = {
-    onlineUser: 'background-color: #95ec69; color: black;',
-    onlineModel: 'background-color: white; color: black;',
+    // Default Online User Bubble: Dark Red/Black Theme
+    onlineUser: 'background-color: #292524; color: white; border-radius: 18px; border-top-right-radius: 2px;',
+    // Default Online Model Bubble: White/Gray Theme
+    onlineModel: 'background-color: #f5f5f4; color: #1c1917; border-radius: 18px; border-top-left-radius: 2px;',
     offlineUser: 'color: #d6d3d1; background-color: rgba(0,0,0,0.3); padding: 8px; border-radius: 8px;',
     offlineModel: 'color: #fef3c7; background-color: rgba(0,0,0,0.3); padding: 8px; border-radius: 8px;',
 };
